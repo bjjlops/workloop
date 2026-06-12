@@ -34,6 +34,7 @@ const DEFAULT_CFG = {
   commands: [],
   ui: { theme: 'mission-control', ambientFx: true },
   editor: { command: '' },
+  git: { pushOnCommit: false },
 };
 if (!existsSync(cfgPath)) writeFileSync(cfgPath, JSON.stringify(DEFAULT_CFG, null, 2));
 
@@ -54,6 +55,23 @@ const readBody = (req) => new Promise((res) => {
 });
 const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 const shIn = (cwd, cmd) => spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', env: childEnv(), timeout: 20000, maxBuffer: 1024 * 1024 * 30 });
+
+// argv git — no shell startup, no quoting rules, identical on every OS
+const gitIn = (cwd, args, timeout = 20000) =>
+  spawnSync('git', args, { cwd, encoding: 'utf8', env: childEnv(), timeout, maxBuffer: 1024 * 1024 * 30 });
+
+// async argv git for NETWORK ops (push/pull/gh) — a spawnSync here would
+// freeze the SSE bus for the whole transfer (we've been burned twice)
+const gitInAsync = (cwd, args, { timeout = 60000, bin = 'git' } = {}) => new Promise((resolve) => {
+  let out = '', err = '', p;
+  try { p = spawn(bin, args, { cwd, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] }); }
+  catch (e) { return resolve({ status: -1, stdout: '', stderr: String(e.message || e), errorCode: e.code || null }); }
+  const timer = setTimeout(() => { try { p.kill('SIGKILL'); } catch { /* gone */ } err += '\n[timed out]'; }, timeout);
+  p.stdout.on('data', (d) => (out += d));
+  p.stderr.on('data', (d) => (err += d));
+  p.on('error', (e) => { clearTimeout(timer); resolve({ status: -1, stdout: out, stderr: err || String(e.message || e), errorCode: e.code || null }); });
+  p.on('close', (code) => { clearTimeout(timer); resolve({ status: code ?? -1, stdout: out, stderr: err, errorCode: null }); });
+});
 
 function mergeCfg(base, patch) {
   const out = { ...base };
@@ -112,11 +130,11 @@ function runScannerAsync(reason) {
 
 function gitInfo(repoPath) {
   if (!repoPath || repoPath.startsWith('/ABSOLUTE') || !existsSync(repoPath)) return { path: repoPath || null, exists: false, git: false, branch: null, dirty: null };
-  const isGit = shIn(repoPath, 'git rev-parse --is-inside-work-tree').status === 0;
+  const isGit = gitIn(repoPath, ['rev-parse', '--is-inside-work-tree']).status === 0;
   let branch = null, dirty = null;
   if (isGit) {
-    branch = (shIn(repoPath, 'git rev-parse --abbrev-ref HEAD').stdout || '').trim() || null;
-    dirty = !!(shIn(repoPath, 'git status --porcelain').stdout || '').trim();
+    branch = (gitIn(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || '').trim() || null;
+    dirty = !!(gitIn(repoPath, ['status', '--porcelain']).stdout || '').trim();
   }
   return { path: repoPath, exists: true, git: isGit, branch, dirty };
 }
@@ -126,28 +144,62 @@ const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,180}$/;
 
 function gitState(repoPath) {
   const cfg = readCfg();
-  const current = (shIn(repoPath, 'git rev-parse --abbrev-ref HEAD').stdout || '').trim();
-  const branches = (shIn(repoPath, "git branch --format='%(refname:short)'").stdout || '')
+  const current = (gitIn(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || '').trim();
+  const branches = (gitIn(repoPath, ['branch', '--format=%(refname:short)']).stdout || '')
     .split('\n').map((s) => s.trim()).filter(Boolean);
-  const changes = (shIn(repoPath, 'git status --porcelain').stdout || '')
+  const changes = (gitIn(repoPath, ['status', '--porcelain']).stdout || '')
     .split('\n').filter(Boolean).map((l) => ({ code: l.slice(0, 2).trim(), file: l.slice(3) }));
   const prefix = cfg.branchPrefix || 'workloop';
-  const remote = (shIn(repoPath, 'git remote get-url origin').stdout || '').trim() || null;
+  const remote = (gitIn(repoPath, ['remote', 'get-url', 'origin']).stdout || '').trim() || null;
+  let upstream = null, ahead = 0, behind = 0; // local tracking refs only — no network on the poll
+  const up = gitIn(repoPath, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
+  if (up.status === 0) {
+    upstream = up.stdout.trim();
+    const lr = gitIn(repoPath, ['rev-list', '--left-right', '--count', `${upstream}...HEAD`]);
+    const m = (lr.stdout || '').trim().match(/^(\d+)\s+(\d+)$/);
+    if (m) { behind = +m[1]; ahead = +m[2]; } // left = upstream-only, right = HEAD-only
+  }
   return {
     current, branches, changes, dirty: changes.length > 0, prefix,
     isWorkloop: current.startsWith(prefix + '/'),
     remote, main: defaultBranch(repoPath),
+    upstream, ahead, behind,
   };
 }
 
 function defaultBranch(repoPath) {
   for (const b of ['main', 'master'])
-    if (shIn(repoPath, `git rev-parse --verify --quiet ${b}`).status === 0) return b;
+    if (gitIn(repoPath, ['rev-parse', '--verify', '--quiet', b]).status === 0) return b;
   return 'main';
 }
 
+function remoteDefaultBranch(repoPath) { // PRs flow into the REMOTE's default, not the local guess
+  const r = gitIn(repoPath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']); // "origin/main"
+  if (r.status === 0) return r.stdout.trim().replace(/^origin\//, '');
+  return defaultBranch(repoPath);
+}
+
+function githubWebBase(remote) { // https / ssh / git@ remote -> https://github.com/owner/repo, or null
+  const m = (remote || '').match(/^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/(.+?)(?:\.git)?\/?$/);
+  return m ? `https://github.com/${m[1]}/${m[2]}` : null;
+}
+
+function pushFailureMessage(stderr) {
+  const s = stderr || '';
+  if (/no configured push destination|does not appear to be a git repository|No such remote/i.test(s)) {
+    return 'no remote — add one first: git remote add origin <url>';
+  }
+  if (/non-fast-forward|fetch first|\[rejected\]/i.test(s)) {
+    return 'remote has new commits — Sync first, then Push';
+  }
+  if (/Authentication failed|Permission denied|could not read Username|403/i.test(s)) {
+    return "git can't sign in to the remote — set up SSH keys or a credential helper (gh auth login works too)";
+  }
+  return (s.trim().split('\n').pop() || 'push failed').slice(0, 200);
+}
+
 function generateCommitMessage(repoPath) {
-  const porcelain = (shIn(repoPath, 'git status --porcelain').stdout || '');
+  const porcelain = (gitIn(repoPath, ['status', '--porcelain']).stdout || '');
   const lines = porcelain.split('\n').filter(Boolean);
   const names = lines.map((l) => l.slice(3).trim());
   const fallback = () =>
@@ -155,8 +207,8 @@ function generateCommitMessage(repoPath) {
   try {
     const claude = resolveClaude(splitCommand(readCfg().agent?.command || 'claude').bin);
     if (!claude) return fallback();
-    const stat = (shIn(repoPath, 'git diff HEAD --stat | tail -n 20').stdout || '').trim();
-    const diff = (shIn(repoPath, 'git diff HEAD | head -c 6000').stdout || '');
+    const stat = (gitIn(repoPath, ['diff', 'HEAD', '--stat']).stdout || '').trim().split('\n').slice(-20).join('\n');
+    const diff = (gitIn(repoPath, ['diff', 'HEAD']).stdout || '').slice(0, 6000);
     const prompt = `Write a single-line conventional commit message (max 70 characters) for these changes. Output ONLY the message itself — no quotes, no markdown, no explanation.\n\nChanged files:\n${names.join('\n')}\n\nDiff stat:\n${stat}\n\nDiff (truncated):\n${diff}`;
     const r = spawnSync(claude, ['-p', prompt], { encoding: 'utf8', env: childEnv(), timeout: 35000, cwd: repoPath });
     const line = (r.stdout || '').split('\n').map((s) => s.trim()).filter(Boolean)[0] || '';
@@ -189,9 +241,9 @@ function walkFiles(root) {
 }
 
 function buildRepoTree(repoPath, heat) {
-  const isGit = shIn(repoPath, 'git rev-parse --is-inside-work-tree').status === 0;
+  const isGit = gitIn(repoPath, ['rev-parse', '--is-inside-work-tree']).status === 0;
   const paths = isGit
-    ? (shIn(repoPath, 'git ls-files -z -c -o --exclude-standard').stdout || '').split('\0').filter(Boolean)
+    ? (gitIn(repoPath, ['ls-files', '-z', '-c', '-o', '--exclude-standard']).stdout || '').split('\0').filter(Boolean)
     : walkFiles(repoPath);
   const seen = new Set(), langs = {};
   let files = [], bytes = 0, depth = 0;
@@ -207,7 +259,7 @@ function buildRepoTree(repoPath, heat) {
     files.push({ p, s: st.size });
   }
   if (heat && isGit) { // one history pass: newest commit touching each file (first-seen wins)
-    const out = shIn(repoPath, 'git -c core.quotepath=off log -n 400 --pretty=format:%x01%ct --name-only').stdout || '';
+    const out = gitIn(repoPath, ['-c', 'core.quotepath=off', 'log', '-n', '400', '--pretty=format:%x01%ct', '--name-only']).stdout || '';
     const hm = new Map(); let ts = 0;
     for (const line of out.split('\n')) {
       if (!line) continue;
@@ -236,7 +288,7 @@ function buildRepoTree(repoPath, heat) {
 let treeCache = { key: null, at: 0, payload: null };
 
 function repoStatus(repoPath) {
-  const raw = shIn(repoPath, 'git status --porcelain -z').stdout || '';
+  const raw = gitIn(repoPath, ['status', '--porcelain', '-z']).stdout || '';
   const parts = raw.split('\0').filter(Boolean);
   const changed = [];
   for (let i = 0; i < parts.length; i++) {
@@ -250,8 +302,8 @@ function repoStatus(repoPath) {
     if (kind !== 'deleted') { try { size = lstatSync(join(repoPath, file)).size; } catch { /* raced */ } }
     changed.push({ file, code: code.trim(), kind, size, from });
   }
-  const head = (shIn(repoPath, 'git rev-parse --short HEAD').stdout || '').trim() || null;
-  const branch = (shIn(repoPath, 'git rev-parse --abbrev-ref HEAD').stdout || '').trim() || null;
+  const head = (gitIn(repoPath, ['rev-parse', '--short', 'HEAD']).stdout || '').trim() || null;
+  const branch = (gitIn(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || '').trim() || null;
   return { head, branch, dirty: changed.length > 0, ts: Date.now(), changed };
 }
 
@@ -683,13 +735,13 @@ const server = createServer(async (req, res) => {
     if (!repoPath || repoPath.startsWith('/ABSOLUTE') || !existsSync(repoPath))
       return json(res, 200, { error: 'repo not set' });
     const heat = url.searchParams.get('heat') === '1';
-    const head = (shIn(repoPath, 'git rev-parse --short HEAD').stdout || '').trim() || null;
-    const dirtyHash = sha1(shIn(repoPath, 'git status --porcelain').stdout || '');
+    const head = (gitIn(repoPath, ['rev-parse', '--short', 'HEAD']).stdout || '').trim() || null;
+    const dirtyHash = sha1(gitIn(repoPath, ['status', '--porcelain']).stdout || '');
     const key = sha1(`${repoPath}|${head}|${dirtyHash}|${heat ? 1 : 0}`);
     if (url.searchParams.get('fresh') !== '1' && treeCache.key === key && Date.now() - treeCache.at < TREE_TTL)
       return json(res, 200, { ...treeCache.payload, cached: true });
     const built = buildRepoTree(repoPath, heat);
-    const branch = (shIn(repoPath, 'git rev-parse --abbrev-ref HEAD').stdout || '').trim() || null;
+    const branch = (gitIn(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']).stdout || '').trim() || null;
     const payload = { repo: repoPath, branch, head, generatedAt: Date.now(), cached: false, ...built };
     treeCache = { key, at: Date.now(), payload };
     return json(res, 200, payload);
@@ -763,7 +815,7 @@ const server = createServer(async (req, res) => {
         const branch = String(body.branch || '').trim();
         if (!BRANCH_RE.test(branch)) return json(res, 400, { error: 'invalid branch name' });
         if (st.dirty) return json(res, 400, { error: 'uncommitted changes — Commit or Discard them first' });
-        const r = shIn(repoPath, `git switch "${branch}"`);
+        const r = gitIn(repoPath, ['switch', branch]);
         if (r.status !== 0) return json(res, 400, { error: (r.stderr || 'switch failed').trim().split('\n').pop() });
         publish('git.switch', `switched to ${branch}`, { branch });
         return json(res, 200, { switched: branch, state: gitState(repoPath) });
@@ -774,7 +826,7 @@ const server = createServer(async (req, res) => {
         if (!BRANCH_RE.test(name)) return json(res, 400, { error: 'invalid branch name' });
         if (st.branches.includes(name)) return json(res, 400, { error: 'a branch with that name already exists' });
         // no clean-tree requirement — `switch -c` legitimately carries uncommitted changes
-        const r = shIn(repoPath, `git switch -c "${name}"`);
+        const r = gitIn(repoPath, ['switch', '-c', name]);
         if (r.status !== 0) return json(res, 400, { error: (r.stderr || 'branch failed').trim().split('\n').pop() });
         publish('git.branch', `created branch ${name}`, { branch: name });
         return json(res, 200, { created: name, state: gitState(repoPath) });
@@ -785,11 +837,18 @@ const server = createServer(async (req, res) => {
         const message = String(body.message || '').trim() || generateCommitMessage(repoPath);
         const msgFile = join(__dirname, '.workloop', 'commitmsg.txt');
         writeFileSync(msgFile, message + '\n');
-        shIn(repoPath, 'git add -A');
-        const c = shIn(repoPath, `git commit -F "${msgFile}"`);
+        gitIn(repoPath, ['add', '-A']);
+        const c = gitIn(repoPath, ['commit', '-F', msgFile]);
         if (c.status !== 0) return json(res, 400, { error: 'commit failed: ' + (c.stderr || '').trim().split('\n').pop() });
         publish('git.commit', `committed — ${message}`, { message });
-        return json(res, 200, { message, state: gitState(repoPath) });
+        let pushed = null, pushError = null; // optional one-click flow: commit lands even if the push doesn't
+        if (cfg.git?.pushOnCommit && st.remote) {
+          const r = await gitInAsync(repoPath, ['push', '-u', 'origin', st.current], { timeout: 60000 });
+          pushed = r.status === 0;
+          if (pushed) publish('git.push', `pushed ${st.current} to origin`, { branch: st.current });
+          else pushError = pushFailureMessage(r.stderr);
+        }
+        return json(res, 200, { message, pushed, pushError, state: gitState(repoPath) });
       }
 
       if (url.pathname === '/api/git/merge') {
@@ -799,22 +858,22 @@ const server = createServer(async (req, res) => {
         const main = defaultBranch(repoPath);
         if (branch === main) return json(res, 400, { error: `already on ${main} — pick a workloop branch to merge` });
         if (st.current !== main) {
-          const sw = shIn(repoPath, `git switch "${main}"`);
+          const sw = gitIn(repoPath, ['switch', main]);
           if (sw.status !== 0) return json(res, 400, { error: `could not switch to ${main}: ` + (sw.stderr || '').trim().split('\n').pop() });
         }
-        const m = shIn(repoPath, `git merge --no-edit "${branch}"`);
+        const m = gitIn(repoPath, ['merge', '--no-edit', branch]);
         if (m.status !== 0) {
-          const conflicts = (shIn(repoPath, 'git diff --name-only --diff-filter=U').stdout || '').trim();
-          shIn(repoPath, 'git merge --abort');
+          const conflicts = (gitIn(repoPath, ['diff', '--name-only', '--diff-filter=U']).stdout || '').trim();
+          gitIn(repoPath, ['merge', '--abort']);
           return json(res, 409, { error: `merge conflict — aborted safely. Conflicting files: ${conflicts.split('\n').slice(0, 6).join(', ') || 'unknown'}. Resolve manually or re-run the task on a fresh branch.` });
         }
-        shIn(repoPath, `git branch -d "${branch}"`); // safe delete: only removes fully-merged branches
+        gitIn(repoPath, ['branch', '-d', branch]); // safe delete: only removes fully-merged branches
         publish('git.merge', `merged ${branch} into ${main}`, { branch, into: main });
         return json(res, 200, { merged: branch, into: main, state: gitState(repoPath) });
       }
 
       if (url.pathname === '/api/git/discard') {
-        shIn(repoPath, 'git checkout -- .');
+        gitIn(repoPath, ['checkout', '--', '.']);
         const left = gitState(repoPath);
         const untracked = left.changes.filter((c) => c.code === '??').map((c) => c.file);
         publish('git.discard', 'discarded uncommitted changes');
@@ -822,6 +881,59 @@ const server = createServer(async (req, res) => {
           discarded: true, state: left,
           note: untracked.length ? `untracked files kept: ${untracked.slice(0, 5).join(', ')}` : null,
         });
+      }
+
+      if (url.pathname === '/api/git/push') {
+        if (!st.remote) return json(res, 400, { error: 'no remote — add one first: git remote add origin <url>' });
+        if (st.current === 'HEAD') return json(res, 400, { error: 'detached HEAD — switch to a branch first' });
+        const r = await gitInAsync(repoPath, ['push', '-u', 'origin', st.current], { timeout: 60000 });
+        if (r.status !== 0) return json(res, 400, { error: pushFailureMessage(r.stderr) });
+        publish('git.push', `pushed ${st.current} to origin`, { branch: st.current });
+        return json(res, 200, { pushed: true, state: gitState(repoPath) });
+      }
+
+      if (url.pathname === '/api/git/sync') {
+        if (st.dirty) return json(res, 400, { error: 'uncommitted changes — Commit or Discard them first' });
+        if (!st.upstream) return json(res, 400, { error: 'nothing to sync — this branch has no upstream yet (Push first)' });
+        const r = await gitInAsync(repoPath, ['pull', '--ff-only'], { timeout: 120000 });
+        if (r.status !== 0) {
+          const diverged = /not possible to fast-forward|divergent|need to specify how to reconcile/i.test(r.stderr);
+          return json(res, 400, { error: diverged
+            ? 'local and remote have diverged — resolve in a terminal (git pull --rebase), then come back'
+            : pushFailureMessage(r.stderr) });
+        }
+        publish('git.sync', `synced ${st.current} from origin`, { branch: st.current });
+        return json(res, 200, { synced: true, state: gitState(repoPath) });
+      }
+
+      if (url.pathname === '/api/git/pr') {
+        const main = remoteDefaultBranch(repoPath);
+        if (st.current === main || st.current === st.main) {
+          return json(res, 400, { error: `you're on ${st.current} — create a branch first; PRs flow into ${main}` });
+        }
+        if (!st.remote) return json(res, 400, { error: 'no remote — add one first: git remote add origin <url>' });
+        // the branch must exist on the remote: gh would prompt interactively,
+        // and a compare page for an unpushed branch is empty
+        if (!st.upstream || st.ahead > 0) {
+          const p = await gitInAsync(repoPath, ['push', '-u', 'origin', st.current], { timeout: 60000 });
+          if (p.status !== 0) return json(res, 400, { error: pushFailureMessage(p.stderr) });
+          publish('git.push', `pushed ${st.current} to origin`, { branch: st.current });
+        }
+        const gh = await gitInAsync(repoPath, ['pr', 'create', '--fill', '--head', st.current], { timeout: 45000, bin: 'gh' });
+        if (gh.errorCode !== 'ENOENT') {
+          const prUrl = ((gh.stdout + '\n' + gh.stderr).match(/https?:\/\/\S+\/pull\/\d+/) || [])[0] || null;
+          if (gh.status === 0 && prUrl) {
+            publish('git.pr', `PR opened — ${prUrl}`, { url: prUrl });
+            return json(res, 200, { url: prUrl, state: gitState(repoPath) });
+          }
+          if (prUrl) return json(res, 200, { url: prUrl, existing: true, state: gitState(repoPath) }); // "already exists" prints the URL
+          return json(res, 400, { error: (gh.stderr.trim().split('\n').pop() || 'gh pr create failed').slice(0, 200) });
+        }
+        const base = githubWebBase(st.remote); // no gh installed — hand the browser a compare page
+        if (!base) return json(res, 400, { error: "origin is not GitHub — open the PR in your host's UI" });
+        const compareUrl = `${base}/compare/${encodeURIComponent(main)}...${encodeURIComponent(st.current)}?expand=1`;
+        publish('git.pr', 'opening the compare page', { compareUrl });
+        return json(res, 200, { compareUrl, state: gitState(repoPath) });
       }
     }
   }

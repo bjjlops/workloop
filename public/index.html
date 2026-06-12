@@ -191,6 +191,12 @@ document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2'
           <button class="linkbtn" id="btn-discard" hidden>Discard</button>
           <button class="linkbtn" id="btn-merge" hidden>Merge → main</button>
         </div>
+        <div class="row">
+          <button class="linkbtn" id="btn-push" hidden>Push</button>
+          <button class="linkbtn" id="btn-sync" hidden>Sync</button>
+          <button class="linkbtn" id="btn-pr" hidden>Open PR</button>
+        </div>
+        <label class="check"><input type="checkbox" id="f-pushcommit" /> push after each Commit</label>
       </div>
     </details>
 

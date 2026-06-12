@@ -53,11 +53,27 @@ function renderGit(g) {
   tr.textContent = g.dirty
     ? `${g.changes.length} uncommitted change${g.changes.length === 1 ? '' : 's'}`
     : 'clean';
-  $('#hud-branch-name').textContent = g.current + (g.dirty ? ' ±' + g.changes.length : '');
+  $('#hud-branch-name').textContent = g.current
+    + (g.dirty ? ' ±' + g.changes.length : '')
+    + (g.ahead ? ' ↑' + g.ahead : '');
   $('#git-remote').textContent = g.remote || 'no remote';
   $('#btn-commit').hidden = !g.dirty;
   $('#btn-discard').hidden = !g.dirty;
   $('#btn-merge').hidden = !(g.isWorkloop && !g.dirty);
+  // GitHub flow: unpushed work and incoming commits are visible at a glance
+  const hasRemote = !!g.remote, hasUp = !!g.upstream;
+  const push = $('#btn-push'), sync = $('#btn-sync'), pr = $('#btn-pr');
+  if (push) {
+    push.hidden = !(hasRemote && (!hasUp || g.ahead > 0));
+    push.textContent = g.ahead ? `Push ↑${g.ahead}` : 'Push';
+  }
+  if (sync) {
+    // behind only updates after a fetch (local tracking refs) — keep Sync
+    // available whenever an upstream exists; ff-only makes it always safe
+    sync.hidden = !hasUp;
+    sync.textContent = g.behind ? `Sync ↓${g.behind}` : 'Sync';
+  }
+  if (pr) pr.hidden = !(hasRemote && g.current !== g.main);
   // uncommitted files pulse on the galaxy (porcelain renames arrive as "old -> new")
   if (typeof Viz !== 'undefined') Viz.setDirty(g.dirty ? g.changes.map((c) => c.file.split(' -> ').pop()) : []);
 }
@@ -138,8 +154,47 @@ $('#btn-commit').addEventListener('click', async () => {
   const r = await post('/api/git/commit', {});
   b.disabled = false; b.textContent = 'Commit';
   if (r.error) note(r.error);
-  else { note('committed: ' + r.message); await refreshRepo(); }
+  else {
+    const suffix = r.pushed === true ? ' · pushed' : r.pushed === false ? ' · push failed: ' + (r.pushError || '?') : '';
+    note('committed: ' + r.message + suffix);
+    await refreshRepo();
+  }
 });
+
+$('#btn-push')?.addEventListener('click', async () => {
+  const b = $('#btn-push'); b.disabled = true; b.textContent = 'Pushing…';
+  const r = await post('/api/git/push', {});
+  b.disabled = false;
+  note(r.error || 'pushed to origin');
+  await refreshRepo();
+});
+
+$('#btn-sync')?.addEventListener('click', async () => {
+  const b = $('#btn-sync'); b.disabled = true; b.textContent = 'Syncing…';
+  const r = await post('/api/git/sync', {});
+  b.disabled = false;
+  if (r.error) note(r.error);
+  else { note('synced from origin'); await scan(); }
+  await refreshRepo();
+});
+
+$('#btn-pr')?.addEventListener('click', async () => {
+  const w = window.open('about:blank'); // synchronous — popup blockers eat windows opened after an await
+  const b = $('#btn-pr'); b.disabled = true; b.textContent = 'Opening…';
+  const r = await post('/api/git/pr', {});
+  b.disabled = false; b.textContent = 'Open PR';
+  const url = r.url || r.compareUrl;
+  if (url) {
+    if (w) w.location = url;
+    note(r.existing ? 'PR already exists — opened it' : 'PR page opened');
+  } else {
+    if (w) w.close();
+    note(r.error || 'could not open a PR');
+  }
+  await refreshRepo();
+});
+
+$('#f-pushcommit')?.addEventListener('change', (e) => post('/api/config', { git: { pushOnCommit: e.target.checked } }));
 $('#btn-discard').addEventListener('click', async () => {
   const files = (state.git?.changes || []).map((c) => c.file).slice(0, 12).join('\n');
   if (!confirm('Discard ALL uncommitted changes? This cannot be undone.\n\n' + files)) return;

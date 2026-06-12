@@ -15,6 +15,7 @@ async function loadSettings() {
   $('#f-turns').value = c.agent?.maxTurns || 30;
   if ($('#f-editor')) $('#f-editor').value = c.editor?.command || '';
   $('#f-pr').checked = !!c.openPR;
+  if ($('#f-pushcommit')) $('#f-pushcommit').checked = !!c.git?.pushOnCommit;
   $('#detectmsg').textContent = '';
   state.config = c;
   if (typeof Commands !== 'undefined' && Commands.renderList) Commands.renderList(c.commands || []);
