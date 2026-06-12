@@ -89,7 +89,7 @@ function card(t) {
     ? `<span class="gate"><span class="dot"></span>verified</span>`
     : `<span class="gate review"><span class="dot"></span>review only</span>`;
   const loc = t.file ? `<div class="loc">${esc(t.file)}${t.line ? ':' + t.line : ''}</div>` : '';
-  const canDiscard = t.column === 'should-implement';
+  const canDiscard = t.column === 'should-implement' || t.source === 'finding';
   el.innerHTML = `
     <div class="head">
       <div>
@@ -126,13 +126,17 @@ function card(t) {
       if (state.batch || state.running) { note('a run is active — discard after it finishes'); return; }
       const msg = t.source === 'backlog'
         ? `Remove this goal from BACKLOG.md?\n\n${t.title}`
-        : `Hide this from the board? The comment stays in your code.\n\n${t.title}`;
+        : t.source === 'finding'
+          ? `Discard this reported issue? It won't be re-added if reported again.\n\n${t.title}`
+          : `Hide this from the board? The comment stays in your code.\n\n${t.title}`;
       if (!confirm(msg)) return;
       const r = await post('/api/task/discard', { id: t.id });
       if (r.error) { note(r.error); return; }
       render(r);
       refreshRepo(); // a backlog edit dirties the tree — surfaces the Commit button
-      note(t.source === 'backlog' ? 'discarded — removed from BACKLOG.md (Commit when ready)' : 'discarded — hidden from future scans');
+      note(t.source === 'backlog' ? 'discarded — removed from BACKLOG.md (Commit when ready)'
+        : t.source === 'finding' ? 'discarded — this report stays dismissed'
+          : 'discarded — hidden from future scans');
     });
   }
   return el;

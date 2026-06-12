@@ -169,6 +169,24 @@ if (cfg.sources.backlog) {
   }
 }
 
+// --- copilot/dev findings (agent-fixable, persisted in .workloop/findings.json) ---
+// Read raw like dismissed.json — the store is the source of truth, so finding
+// cards survive this wholesale regeneration. LAST block on purpose: shrinks
+// the window where a finding created mid-scan misses this pass.
+{
+  let findings = [];
+  try { findings = JSON.parse(readFileSync(join(stateDir, 'findings.json'), 'utf8')); } catch { /* none */ }
+  const mine = findings.filter((f) => f.status === 'open' && (!f.repo || f.repo === repo));
+  for (const f of mine.slice(0, 40)) {
+    add({
+      id: f.id.slice(3), source: 'finding', origin: f.source, findingId: f.id,
+      column: 'needs-work', title: f.title, file: f.file || null, line: f.line || null,
+      detail: f.detail || `reported by ${f.source}`, verifiable: false, verifyCmd: null,
+    });
+  }
+  if (mine.length > 40) notes.push(`showing 40 of ${mine.length} findings`);
+}
+
 const counts = {
   needsWork: tasks.filter((t) => t.column === 'needs-work').length,
   shouldImplement: tasks.filter((t) => t.column === 'should-implement').length,

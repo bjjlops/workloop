@@ -191,6 +191,7 @@ body:not(.log-verbose) .lrow.verbose { display: none }
 .badge.build { color: var(--pal-style) }
 .badge.todo { color: var(--muted) }
 .badge.backlog { color: var(--accent) }
+.badge.finding { color: var(--pal-ts) } /* copilot/dev-reported fixable issues */
 .gate { font-size: 11px; color: var(--ok) }
 .gate.review { color: var(--warn) }
 .gate .dot {

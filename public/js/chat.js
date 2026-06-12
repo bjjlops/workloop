@@ -44,10 +44,10 @@ const Chat = (() => {
     stick(false);
   }
 
-  /* strip ```handoff / ```queue fences from a finished bubble — cards replace them */
+  /* strip ```handoff / ```queue / ```fix fences from a finished bubble — cards/chips replace them */
   function finalizeBubble(el) {
     const mb = el.querySelector('.mb');
-    const cleaned = mb.textContent.replace(/```(?:handoff|queue)\n[\s\S]*?```/g, '').replace(/\n{3,}/g, '\n\n').trim();
+    const cleaned = mb.textContent.replace(/```(?:handoff|queue|fix)\n[\s\S]*?```/g, '').replace(/\n{3,}/g, '\n\n').trim();
     if (cleaned) mb.innerHTML = richText(cleaned);
     else if (!el.querySelector('.tooluse')) el.remove(); // reply was only a handoff
     else mb.remove();
@@ -85,6 +85,20 @@ const Chat = (() => {
     el.innerHTML = title
       ? `<span>⊕ queued — ${esc(title)}</span><button class="linkbtn act-board">Show board</button>`
       : `<span>⚠ ${blockedCount} goal${blockedCount === 1 ? '' : 's'} not queued — a run is active; ask again after it finishes</span>`;
+    el.querySelector('.act-board')?.addEventListener('click', () => {
+      Drawers.setOpen('r', true);
+      Drawers.setFolded('tasks', false);
+    });
+    msgs.appendChild(el);
+    stick(true);
+  }
+
+  /* the copilot reported a fixable issue (```fix fence) — it landed on the
+     board under Needs work, not as a chat card */
+  function renderFinding(title) {
+    const el = document.createElement('div');
+    el.className = 'queued';
+    el.innerHTML = `<span>⊕ added to Needs work — ${esc(title)}</span><button class="linkbtn act-board">Show board</button>`;
     el.querySelector('.act-board')?.addEventListener('click', () => {
       Drawers.setOpen('r', true);
       Drawers.setFolded('tasks', false);
@@ -143,6 +157,9 @@ const Chat = (() => {
           if (o.type === 'delta') appendText(asst, o.text);
           else if (o.type === 'tool') appendTool(asst, o.name, o.detail);
           else if (o.type === 'handoff') renderHandoff(o.handoff);
+          else if (o.type === 'queued') renderQueued(o.title);
+          else if (o.type === 'queue_blocked') renderQueued(null, o.count);
+          else if (o.type === 'finding') renderFinding(o.title);
           else if (o.type === 'error') {
             appendText(asst, (asst.querySelector('.mb').textContent ? '\n\n' : '') + o.message);
             asst.querySelector('.mb').style.color = 'var(--danger)';
@@ -185,7 +202,7 @@ const Chat = (() => {
       for (const m of (h.messages || []).slice(-30)) {
         const el = addMsg(m.role, '');
         const mb = el.querySelector('.mb');
-        mb.innerHTML = richText(String(m.text).replace(/```handoff\n[\s\S]*?```/g, '').trim());
+        mb.innerHTML = richText(String(m.text).replace(/```(?:handoff|queue|fix)\n[\s\S]*?```/g, '').trim());
       }
       emptyState();
       stick(true);
@@ -243,8 +260,10 @@ const Chat = (() => {
       if (ev?.ts && Date.now() - ev.ts > 15000) return; // ring replay — stale
       let hf;
       try { hf = await (await fetch('/api/handoffs')).json(); } catch { return; }
+      const openIds = new Set((hf.handoffs || []).filter((x) => x.status === 'open').map((x) => x.id));
       for (const h of hf.handoffs || []) {
         if (h.status === 'open') { renderHandoff(h); continue; } // idempotent by id
+        if (openIds.has(h.id)) continue; // closed twin of a still-open card — don't cross-settle
         const el = document.getElementById('hf-' + h.id);
         if (el && !el.classList.contains('resolved')) {
           el.classList.add('resolved');

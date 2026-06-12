@@ -66,9 +66,18 @@ function fileEvent(b) {
 
 function handleLine(line) {
   if (!line.trim()) return;
-  checkAuth(line);
   let o;
-  try { o = JSON.parse(line); } catch { emit({ type: 'agent', message: line.slice(0, 300) }); return; }
+  try { o = JSON.parse(line); }
+  catch {
+    // Non-JSON stdout is the CLI itself talking — the only stdout where a
+    // real "not logged in" can appear. JSON lines carry the agent's file
+    // reads/edits, and files in THIS repo legitimately contain "/login"
+    // (chat.mjs, handoffs.mjs regexes) — sniffing them aborted healthy runs
+    // with a false "engine is not logged in".
+    checkAuth(line);
+    emit({ type: 'agent', message: line.slice(0, 300) });
+    return;
+  }
   if (o.type === 'assistant' && o.message?.content) {
     for (const b of o.message.content) {
       if (b.type === 'text' && b.text?.trim()) emit({ type: 'agent', message: b.text.trim().slice(0, 400) });
@@ -78,6 +87,7 @@ function handleLine(line) {
       }
     }
   } else if (o.type === 'result' && o.subtype && o.subtype !== 'success') {
+    checkAuth(`${o.subtype} ${o.result || ''}`); // a FAILED result's own text is the CLI's error, not file content
     emit({ type: 'agent', message: `result: ${o.subtype}` });
   }
 }
@@ -114,7 +124,9 @@ function handleLine(line) {
 
     const dod = task.verifiable
       ? `DEFINITION OF DONE: the command \`${task.verifyCmd}\` exits 0 with no errors.`
-      : `DEFINITION OF DONE: implement the task above. There is no automated check for this one, so make your best, complete change and clearly summarize what (if anything) remains.`;
+      : task.source === 'finding'
+        ? `DEFINITION OF DONE: the reported issue above is fixed. There is no automated check for this one, so make the complete fix and clearly summarize what you changed.`
+        : `DEFINITION OF DONE: implement the task above. There is no automated check for this one, so make your best, complete change and clearly summarize what (if anything) remains.`;
     const loopRule = task.verifiable
       ? `- After editing, run \`${task.verifyCmd}\` yourself and read the output.\n- If it still fails, fix and re-run. Do not stop until it passes.`
       : `- Make the change carefully and keep it tightly scoped to this task.`;
@@ -198,7 +210,7 @@ ${loopRule}${todoRule}
       } catch { /* backlog file missing — nothing to tick */ }
     }
 
-    const type = ({ typescript: 'fix', test: 'fix', lint: 'style', build: 'fix', todo: 'chore', backlog: 'feat' })[task.source] || 'chore';
+    const type = ({ typescript: 'fix', test: 'fix', lint: 'style', build: 'fix', todo: 'chore', backlog: 'feat', finding: 'fix' })[task.source] || 'chore';
     const subject = `${type}: ${task.title.slice(0, 72)}`;
     shArgs('git', ['add', '-A']);
     // argv form — the title is user/scan text and must never reach a shell string

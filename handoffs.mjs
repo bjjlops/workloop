@@ -20,13 +20,17 @@ let items = (() => {
 const save = () => writeJsonAtomic(FILE, items);
 const keyOf = (source, title) => createHash('sha1').update(source + '\0' + title).digest('hex').slice(0, 8);
 
-export function list() {
-  const open = items.filter((i) => i.status === 'open');
-  const closed = items.filter((i) => i.status !== 'open').slice(-20);
+// repo-scoped: handoffs belong to the repo they were created in; items
+// without a repo (legacy, pre-scoping) show everywhere until tagged
+const inRepo = (i, repo) => !i.repo || !repo || i.repo === repo;
+
+export function list(repo) {
+  const open = items.filter((i) => i.status === 'open' && inRepo(i, repo));
+  const closed = items.filter((i) => i.status !== 'open' && inRepo(i, repo)).slice(-20);
   return [...open, ...closed];
 }
 
-export const openCount = () => items.filter((i) => i.status === 'open').length;
+export const openCount = (repo) => items.filter((i) => i.status === 'open' && inRepo(i, repo)).length;
 
 // reload: the OTHER Workloop instance (sharing .workloop/) rewrote
 // handoffs.json — adopt its list. The file watcher hands us the parsed data.
@@ -35,7 +39,7 @@ export function reload(next) {
   return openCount();
 }
 
-export function create(source, title, steps, context) {
+export function create(source, title, steps, context, repo) {
   title = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 160);
   if (!title) return null;
   const id = 'hf_' + keyOf(source, title);
@@ -45,6 +49,7 @@ export function create(source, title, steps, context) {
     title,
     steps: (steps || []).map((s) => String(s).trim()).filter(Boolean).slice(0, 12),
     context: context || {},
+    repo: repo || null,
     status: 'open', resolvedAt: null,
   };
   items.push(h);
@@ -55,7 +60,10 @@ export function create(source, title, steps, context) {
 }
 
 export function setStatus(id, status) {
-  const h = items.find((i) => i.id === id);
+  // prefer the OPEN match: create() only dedupes against open items, so a
+  // closed twin with the same id can shadow the open one and make it
+  // unreachable from the resolve/dismiss API
+  const h = items.find((i) => i.id === id && i.status === 'open') || items.find((i) => i.id === id);
   if (!h) return null;
   h.status = status;
   h.resolvedAt = Date.now();
@@ -66,66 +74,67 @@ export function setStatus(id, status) {
 }
 
 /* ---- detection: dev-server launch blockers (single source of truth —
-   matched live against each dev output line, not just on exit) ---- */
+   matched live against each dev output line, not just on exit).
+   kind 'handoff' = truly hands-on (system setup, account logins) → chat card.
+   kind 'fix' = an agent can run the fix → returned to the server, which lands
+   it under Needs work on the board instead. ---- */
 const DEV_HINTS = [
-  [/Xcode must be fully installed|xcode-select|xcrun simctl/i,
+  [/Xcode must be fully installed|xcode-select|xcrun simctl/i, 'handoff',
     'Finish Xcode setup for the iOS simulator',
     ['Run in Terminal: `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`',
       'Then: `sudo xcodebuild -runFirstLaunch`',
       'Hit Run locally again']],
-  [/port .*(in use|busy)|EADDRINUSE/i,
+  [/port .*(in use|busy)|EADDRINUSE/i, 'handoff',
     'Free the dev-server port',
     ['Another dev server is holding the port — stop it or free the port',
       'Find it with: `lsof -nP -iTCP -sTCP:LISTEN`',
       'Hit Run locally again']],
-  [/EXPO_TOKEN|expo.*non-interactive mode/i,
+  [/EXPO_TOKEN|expo.*non-interactive mode/i, 'handoff',
     'Expo wants an account login to sign the manifest',
     ['Add `--offline` to the dev command in the control center (anonymous local dev)',
       'Or run `npx expo login` once in Terminal']],
-  [/should be updated for best compatibility/i,
-    'Align package versions (warnings only)',
-    ['When convenient, run: `npx expo install --fix`']],
+  [/should be updated for best compatibility/i, 'fix',
+    'Run `npx expo install --fix` to align package versions', null],
 ];
 
-export function checkDevLine(line) {
-  for (const [re, title, steps] of DEV_HINTS) {
-    if (re.test(line)) return create('dev', title, steps, { line: line.slice(0, 200) });
+// returns { handoff } when a chat card was created, { fix: {title, detail} }
+// when the caller (server.mjs) should land a board finding, or null
+export function checkDevLine(line, repo) {
+  for (const [re, kind, title, steps] of DEV_HINTS) {
+    if (!re.test(line)) continue;
+    if (kind === 'fix') return { fix: { title, detail: `dev output: ${line.slice(0, 200)}` } };
+    const h = create('dev', title, steps, { line: line.slice(0, 200) }, repo);
+    return h ? { handoff: h } : null;
   }
   return null;
 }
 
-/* ---- detection: failed agent runs ---- */
-export function fromRunFailure(taskId, title, reason, branch, logTail) {
+/* ---- detection: failed agent runs ----
+   Only truly hands-on blockers become chat cards (sign-in, dirty tree).
+   Verifier failures and other agent-addressable reasons stay on the BOARD:
+   the task card keeps its Retry button, and the reason rides run.done in the
+   activity log plus lastRun in the copilot's snapshot. */
+export function fromRunFailure(taskId, title, reason, branch, logTail, repo) {
   reason = reason || '';
   if (/another run is already active/i.test(reason)) return null;
   if (/logged in|\/login/i.test(reason)) {
     return create('run', 'Sign in to Claude Code', [
       'Open Connections in the control center and click Sign in (or run `claude /login` in Terminal)',
       `Then Retry the task: ${title}`,
-    ], { taskId, tag: 'signin' });
+    ], { taskId, tag: 'signin' }, repo);
   }
   if (/uncommitted changes/i.test(reason)) {
     return create('run', 'Commit or discard loose changes before running', [
       'Open Branches in the control center',
       'Commit (writes an AI-summarized message) or Discard the changes',
       `Then Retry the task: ${title}`,
-    ], { taskId, tag: 'dirty' });
+    ], { taskId, tag: 'dirty' }, repo);
   }
-  if (/verifier/i.test(reason)) {
-    return create('run', `Verifier still failing — ${title}`, [
-      branch ? `The partial work is on branch \`${branch}\`` : 'The partial work is on the run branch',
-      'Hit Run locally to test it, or open the branch in your editor',
-      'Fix what remains, or Retry to let the agent take another pass',
-    ], { taskId, branch, tag: 'verifier', log: (logTail || '').slice(-1200) });
-  }
-  return create('run', `Run needs you — ${reason.slice(0, 120)}`, [
-    branch ? `Inspect branch \`${branch}\`` : `Re-run the task after addressing: ${reason.slice(0, 160)}`,
-    'Retry from the Tasks panel when ready',
-  ], { taskId, branch, tag: 'other' });
+  return null;
 }
 
 /* ---- detection: chat ```handoff fences ---- */
-export function fromChatText(text, context) {
+export function fromChatText(text, context, repo) {
   const out = [];
   const re = /```handoff\n([\s\S]*?)```/g;
   let m;
@@ -134,7 +143,7 @@ export function fromChatText(text, context) {
     if (!lines.length) continue;
     const title = lines[0].replace(/^#+\s*/, '');
     const steps = lines.slice(1).map((s) => s.replace(/^(\d+[.)]|[-*])\s*/, ''));
-    const h = create('chat', title, steps, context);
+    const h = create('chat', title, steps, context, repo);
     if (h) out.push(h);
   }
   return out;

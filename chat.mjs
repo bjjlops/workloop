@@ -60,8 +60,10 @@ function preamble(tools) {
       ? `Your tool access is read-only (${tools}) — you cannot edit files or run commands; the dashboard's Run buttons do that.`
       : `Your tools: ${tools}.`)
     + ' A live WORKSPACE STATE snapshot (task board, queue, agent run, dev server, recent activity, open handoffs, git) is appended to these instructions and regenerated every turn — trust it over anything older in the conversation when answering questions about tasks, runs, activity, or handoffs.'
-    + ' When the user must do something you cannot reach — steps in external dashboards (Cloudflare, Vercel, Supabase, App Store Connect, DNS registrars), secrets or API keys, sign-ins, purchases, physical devices — emit a fenced code block whose info string is exactly handoff: first line a short imperative title, following lines numbered steps, each runnable command wrapped in backticks.'
-    + ' When the user asks you to queue, add, or track work for later (or accepts your offer to queue it), emit a fenced code block whose info string is exactly queue: one goal per line, short and imperative — Workloop appends each to the backlog and it appears under Queue on the task board.';
+    + ' Route actionable items to the right place — chat is for conversation; work belongs on the task board:'
+    + ' (1) handoff fence — STRICTLY for steps only the user themselves can do: sign-ins and auth, secrets or API keys, external dashboards (Cloudflare, Vercel, Supabase, App Store Connect, DNS registrars), purchases, physical devices, or decisions only they can make. First line a short imperative title, following lines numbered steps, each runnable command wrapped in backticks. NEVER use a handoff for anything fixable by editing code or running commands in this repo.'
+    + ' (2) fix fence — when you identify a concrete repo problem an agent could fix (a bug, broken config, failing command, bad import, version misalignment), emit a fenced code block whose info string is exactly fix: one issue per line, short and imperative, optionally prefixed with its location as path/to/file:LINE followed by " — ". Workloop puts each under Needs work on the task board with a Run button; do not also describe it as a handoff.'
+    + ' (3) queue fence — when the user asks you to queue, add, or track work for later (or accepts your offer to queue it), emit a fenced code block whose info string is exactly queue: one goal per line, short and imperative — Workloop appends each to the backlog and it appears under Queue on the task board.';
 }
 
 // ```queue fences — the copilot's way to push goals onto the task board.
@@ -80,11 +82,39 @@ function goalsFromText(text) {
   return out;
 }
 
-// send(): streams {type:'delta'|'tool'|'handoff'|'queued'|'queue_blocked'|'error'|'done'}
+// ```fix fences — agent-fixable issues that belong under Needs work on the
+// board, NOT in the chat. One issue per line, optional "path/to/file:123 — "
+// location prefix. Safe to land mid-run: findings live in .workloop/, outside
+// the repo the agent is editing. Exported for testability.
+export function fixesFromText(text) {
+  const out = [];
+  const re = /```fix\n([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(text || ''))) {
+    for (const raw of m[1].split('\n')) {
+      const s = raw.trim().replace(/^(\d+[.)]|[-*])\s*/, '');
+      if (!s) continue;
+      const sep = s.includes(' — ') ? ' — ' : s.includes(' - ') ? ' - ' : null;
+      if (sep) {
+        const loc = s.slice(0, s.indexOf(sep)).trim();
+        const lm = loc.match(/^([\w@./-]+?)(?::(\d+))?$/);
+        if (lm && (loc.includes('/') || loc.includes('.'))) {
+          out.push({ title: s.slice(s.indexOf(sep) + sep.length).trim(), file: lm[1], line: lm[2] ? Number(lm[2]) : null, detail: s });
+          continue;
+        }
+      }
+      out.push({ title: s, file: null, line: null, detail: s });
+    }
+  }
+  return out;
+}
+
+// send(): streams {type:'delta'|'tool'|'handoff'|'queued'|'queue_blocked'|'finding'|'error'|'done'}
 // NDJSON lines. The fetch connection IS the cancel mechanism — client aborts, we kill.
 // context: the server's live workspace snapshot, appended to the system prompt
 // each turn. onGoals: the server's queue hook for ```queue fences.
-export function send(req, res, { text, cfg, context, onGoals }) {
+// onFixes: the server's Needs-work hook for ```fix fences.
+export function send(req, res, { text, cfg, context, onGoals, onFixes }) {
   if (child) {
     res.writeHead(409, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ error: 'a chat reply is already streaming — stop it first' }));
@@ -195,13 +225,19 @@ export function send(req, res, { text, cfg, context, onGoals }) {
         sess.messages.push({ role: 'assistant', text: reply, ts: Date.now() });
         if (sess.messages.length > MSG_CAP) sess.messages = sess.messages.slice(-MSG_CAP);
         save();
-        for (const h of fromChatText(reply, { sessionId: sess.sessionId })) write({ type: 'handoff', handoff: h });
+        for (const h of fromChatText(reply, { sessionId: sess.sessionId }, cfg.repoPath)) write({ type: 'handoff', handoff: h });
         const goals = goalsFromText(reply);
         if (goals.length && onGoals) {
           let r = {};
           try { r = onGoals(goals) || {}; } catch { /* queueing failed — the reply still stands */ }
           for (const t of r.queued || []) write({ type: 'queued', title: t });
           if (r.blocked) write({ type: 'queue_blocked', count: goals.length });
+        }
+        const fixes = fixesFromText(reply);
+        if (fixes.length && onFixes) {
+          let r = {};
+          try { r = onFixes(fixes) || {}; } catch { /* landing failed — the reply still stands */ }
+          for (const t of r.landed || []) write({ type: 'finding', title: t });
         }
         publish('chat.done', reply.slice(0, 160), { durationMs: Date.now() - t0 });
       } else if (!ok) {

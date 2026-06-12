@@ -14,6 +14,7 @@ import * as Platform from './platform.mjs';
 import { attach as busAttach, bootId, flushEventsSync, publish, publishForeign, publishLine, recent as busRecent } from './bus.mjs';
 import * as Chat from './chat.mjs';
 import * as Handoffs from './handoffs.mjs';
+import * as Findings from './findings.mjs';
 import * as Commands from './commands.mjs';
 import { recordWrite, watchFile, unwatchFile, writeJsonAtomic } from './watch.mjs';
 
@@ -495,7 +496,10 @@ function startDev() {
       dev.lines.push(s.slice(0, 200));
       if (dev.lines.length > 200) dev.lines.shift();
       publishLine('dev.line', s.slice(0, 200));
-      Handoffs.checkDevLine(s); // known launch blockers become handoffs immediately
+      // known launch blockers: hands-on ones become handoffs immediately;
+      // agent-runnable ones land under Needs work on the board instead
+      const hint = Handoffs.checkDevLine(s, cfg.repoPath);
+      if (hint?.fix) landFinding(cfg, { source: 'dev', ...hint.fix });
       // port-clash forensics: remember WHO holds the port when the tool says so
       if (/Port \d+ is running this app in another window/i.test(s)) dev.portClash = true;
       if (dev.portClash && !dev.stalePid) {
@@ -578,7 +582,7 @@ function serveStatic(req, res, url) {
 const busSnapshot = () => ({
   running: currentRun,
   dev: { running: devRunning(), url: dev.url },
-  handoffsOpen: Handoffs.openCount(),
+  handoffsOpen: Handoffs.openCount(readCfg().repoPath),
 });
 
 // ---------- the AI side, connected ----------
@@ -654,7 +658,7 @@ function chatContext(cfg) {
   };
   const nw = (t.tasks || []).filter((x) => x.column === 'needs-work');
   const qd = (t.tasks || []).filter((x) => x.column === 'should-implement');
-  const open = Handoffs.list().filter((h) => h.status === 'open');
+  const open = Handoffs.list(cfg.repoPath).filter((h) => h.status === 'open');
   const acts = busRecent(15).filter((e) => !e.kind.startsWith('chat.'))
     .map((e) => `  - ${ago(e.ts)} · ${e.kind} · ${cap(e.message)}`);
   const genAt = Date.parse(t.meta?.generatedAt || '') || 0;
@@ -738,6 +742,50 @@ function syncBacklogIntoTasks(cfg, content) {
   return state;
 }
 
+// findingCard: the EXACT task shape scanner.mjs emits for a finding — the
+// equality guard below depends on surgical writes and scans agreeing byte-
+// for-byte, or two instances would rewrite tasks.json at each other forever.
+const findingCard = (f) => ({
+  id: f.id.slice(3), source: 'finding', origin: f.source, findingId: f.id,
+  column: 'needs-work', title: f.title, file: f.file || null, line: f.line || null,
+  detail: f.detail || `reported by ${f.source}`, verifiable: false, verifyCmd: null,
+});
+
+// syncFindingsIntoTasks: re-derive every finding card from the store —
+// shared by landFinding (new report), run-success resolution, discard, and
+// the cross-instance findings.json watcher.
+function syncFindingsIntoTasks(cfg) {
+  const state = readTasks();
+  if (state.meta?.repo !== cfg.repoPath) return null; // board belongs to another repo — a real scan owns this
+  const next = Findings.list(cfg.repoPath).slice(0, 40).map(findingCard);
+  const cur = (state.tasks || []).filter((t) => t.source === 'finding');
+  if (JSON.stringify(cur) === JSON.stringify(next)) return null; // no effective change — don't bump generatedAt
+  state.tasks = [...(state.tasks || []).filter((t) => t.source !== 'finding'), ...next];
+  state.meta.counts = {
+    needsWork: state.tasks.filter((t) => t.column === 'needs-work').length,
+    shouldImplement: state.tasks.filter((t) => t.column === 'should-implement').length,
+  };
+  state.meta.generatedAt = new Date().toISOString();
+  writeJsonAtomic(tasksPath, state);
+  return state;
+}
+
+// landFinding: an agent-fixable issue (copilot ```fix fence, dev-server hint)
+// becomes a Needs-work card with a Run button — NOT a chat handoff. Chat is
+// for conversation and hands-on items only.
+function landFinding(cfg, { source, title, detail, file, line }) {
+  // normalize absolute paths to repo-relative; outside the repo → no location
+  if (typeof file === 'string' && file.startsWith('/')) {
+    file = file.startsWith(cfg.repoPath + '/') ? file.slice(cfg.repoPath.length + 1) : null;
+  }
+  const f = Findings.create({ source, title, detail, file, line, repo: cfg.repoPath });
+  if (!f) return null; // already on the board, or discarded by the user — stay quiet
+  const st = syncFindingsIntoTasks(cfg);
+  if (!st) runScannerAsync('finding landed'); // tasks.json was for another repo
+  publish('task.found', `needs work — ${f.title}`, { findingId: f.id, source });
+  return f;
+}
+
 let armedBacklog = null; // abs path of the backlog file currently watched — re-armed on repo switch
 function armBacklogWatch(cfg) {
   const rp = cfg.repoPath;
@@ -761,11 +809,20 @@ function armBacklogWatch(cfg) {
 function initStateWatchers() {
   const hfPath = join(__dirname, '.workloop', 'handoffs.json');
   const chatPath = join(__dirname, '.workloop', 'chat.json');
+  const fdPath = join(__dirname, '.workloop', 'findings.json');
   // prime the self-write hashes with current disk content so a no-op fs event
   // (touch, double-fire) never re-publishes state nobody changed
-  for (const p of [tasksPath, hfPath, chatPath, lastRunPath, cfgPath]) {
+  for (const p of [tasksPath, hfPath, chatPath, fdPath, lastRunPath, cfgPath]) {
     try { recordWrite(p, readFileSync(p, 'utf8')); } catch { /* absent */ }
   }
+  watchFile(fdPath, 'json', (data) => {
+    Findings.reload(data);
+    const st = syncFindingsIntoTasks(readCfg()); // equality-guarded — no two-instance ping-pong
+    if (st) {
+      publish('task.synced', `findings updated externally — ${st.meta.counts.needsWork} to fix`,
+        { counts: st.meta.counts, source: 'findings' });
+    }
+  });
   watchFile(tasksPath, 'json', (data) => {
     // never rescan from here — reactions to tasks.json must not write tasks.json
     const c = data?.meta?.counts || { needsWork: 0, shouldImplement: 0 };
@@ -847,7 +904,19 @@ const server = createServer(async (req, res) => {
       if (queued.length && !board) runScannerAsync('copilot queued goals'); // board was for another repo
       return { queued: queued.map((q) => q.title), blocked: false };
     };
-    return Chat.send(req, res, { text: clean, cfg, context: chatContext(cfg), onGoals });
+    // ```fix fences: agent-fixable issues land under Needs work on the board —
+    // no mid-run block needed (findings.json lives in .workloop/, outside the
+    // tree the agent is editing)
+    const onFixes = (fixes) => {
+      const live = readCfg();
+      const landed = [];
+      for (const fx of fixes) {
+        const f = landFinding(live, { source: 'copilot', ...fx });
+        if (f) landed.push(f.title);
+      }
+      return { landed };
+    };
+    return Chat.send(req, res, { text: clean, cfg, context: chatContext(cfg), onGoals, onFixes });
   }
   if (req.method === 'GET' && url.pathname === '/api/chat/history') return json(res, 200, Chat.history());
   if (req.method === 'POST' && url.pathname === '/api/chat/reset') {
@@ -858,7 +927,7 @@ const server = createServer(async (req, res) => {
     return json(res, 200, r);
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/handoffs') return json(res, 200, { handoffs: Handoffs.list() });
+  if (req.method === 'GET' && url.pathname === '/api/handoffs') return json(res, 200, { handoffs: Handoffs.list(readCfg().repoPath) });
   if (req.method === 'POST' && (url.pathname === '/api/handoffs/resolve' || url.pathname === '/api/handoffs/dismiss')) {
     const { id } = await readBody(req);
     const h = Handoffs.setStatus(String(id || ''), url.pathname.endsWith('resolve') ? 'done' : 'dismissed');
@@ -1069,9 +1138,16 @@ const server = createServer(async (req, res) => {
     const state = readTasks();
     const task = (state.tasks || []).find((t) => t.id === id);
     if (!task) return json(res, 404, { error: 'task not found — Rescan and try again' });
-    if (task.column !== 'should-implement') return json(res, 400, { error: 'only Should-implement tasks can be discarded' });
+    if (task.column !== 'should-implement' && task.source !== 'finding') {
+      return json(res, 400, { error: 'only Should-implement tasks and reported findings can be discarded' });
+    }
     const cfg = readCfg();
-    if (task.source === 'backlog') {
+    if (task.source === 'finding') {
+      // tombstone the finding so the copilot/dev monitor can't resurrect a
+      // card the user explicitly killed (MUST precede the TODO branch — a
+      // finding falling through would pollute dismissed.json)
+      Findings.discard(task.findingId);
+    } else if (task.source === 'backlog') {
       // backlog lives in workloop's own BACKLOG.md — remove the line for real
       try {
         const file = join(cfg.repoPath, cfg.sources?.backlog || 'BACKLOG.md');
@@ -1340,7 +1416,9 @@ const server = createServer(async (req, res) => {
           o.ok ? `run complete — ${currentRun.title}` : `run needs you — ${o.reason || 'stopped'}`,
           { taskId: id, ok: !!o.ok, reason: o.reason, branch: o.branch, pr: o.pr, note: o.note });
         setLastRun({ taskId: id, title: currentRun?.title || id, ok: !!o.ok, reason: o.reason || null, branch: o.branch || null, pr: o.pr || null, note: o.note || null });
-        if (!o.ok) Handoffs.fromRunFailure(id, currentRun?.title || id, o.reason, o.branch, o.log);
+        // a finding fixed by the run leaves the store — the post-run scan drops its card
+        if (o.ok && task?.findingId) Findings.resolve(task.findingId);
+        if (!o.ok) Handoffs.fromRunFailure(id, currentRun?.title || id, o.reason, o.branch, o.log, readCfg().repoPath);
       }
     };
     let buf = '';
