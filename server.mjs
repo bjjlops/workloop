@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { childEnv, claudeInfo, loginPath, resolveClaude, splitCommand } from './env.mjs';
+import * as Platform from './platform.mjs';
 import { attach as busAttach, bootId, publish, publishLine } from './bus.mjs';
 import * as Chat from './chat.mjs';
 import * as Handoffs from './handoffs.mjs';
@@ -56,8 +57,6 @@ const readBody = (req) => new Promise((res) => {
   let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => { try { res(JSON.parse(b || '{}')); } catch { res({}); } });
 });
 const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
-const shIn = (cwd, cmd) => spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', env: childEnv(), timeout: 20000, maxBuffer: 1024 * 1024 * 30 });
-
 // argv git — no shell startup, no quoting rules, identical on every OS
 const gitIn = (cwd, args, timeout = 20000) =>
   spawnSync('git', args, { cwd, encoding: 'utf8', env: childEnv(), timeout, maxBuffer: 1024 * 1024 * 30 });
@@ -310,7 +309,7 @@ function repoStatus(repoPath) {
 }
 
 // ---------- repo discovery (the "Find repos on this Mac" picker) ----------
-const FIND_SKIP = new Set(['node_modules', 'Library', 'Applications', 'Music', 'Movies', 'Pictures', 'Public']);
+const FIND_SKIP = new Set(['node_modules', 'Library', 'Applications', 'Music', 'Movies', 'Pictures', 'Public', ...Platform.FIND_SKIP_EXTRA]);
 const FIND_TTL = 60000, FIND_MAX_DIRS = 4000, FIND_MAX_REPOS = 200, FIND_MAX_MS = 4000, FIND_MAX_DEPTH = 3;
 const FIND_DIR_MS = 250; // TCC-protected dirs (Desktop/Documents) can BLOCK readdir for minutes — skip them like EPERM
 let repoFindCache = { at: 0, found: null };
@@ -339,7 +338,7 @@ async function findRepos() {
       if (entries.some((e) => e.name === '.git')) { // worktrees keep a .git FILE — still a repo
         let mtimeMs = 0;
         try { mtimeMs = lstatSync(join(dir, '.git')).mtimeMs; } catch { /* fine */ }
-        found.push({ path: dir, name: dir.slice(dir.lastIndexOf('/') + 1), mtimeMs });
+        found.push({ path: dir, name: Platform.basename(dir), mtimeMs });
         if (depth > 0) continue; // don't descend into repos — but a $HOME dotfiles repo must not end the walk
       }
       if (depth >= FIND_MAX_DEPTH) continue;
@@ -366,10 +365,6 @@ const devStatus = () => ({
   exitCode: dev.exited && !dev.stopped ? dev.exitCode : null,
   startedAt: dev.startedAt || null,
 });
-const killGroup = (proc, sig) => {
-  try { process.kill(-proc.pid, sig); }
-  catch { try { proc.kill(sig); } catch { /* gone */ } }
-};
 function startDev() {
   const cfg = readCfg();
   const cmd = cfg.dev?.command;
@@ -377,7 +372,8 @@ function startDev() {
   if (!cfg.repoPath || !existsSync(cfg.repoPath)) return { error: 'repoPath not set.' };
   if (devRunning()) return devStatus();
   dev = { proc: null, lines: [], url: cfg.dev?.url || null, urlMapped: false, exited: false, exitCode: null, stopped: false, startedAt: Date.now() };
-  const p = spawn('bash', ['-lc', cmd], { cwd: cfg.repoPath, env: childEnv(), detached: true });
+  const sh = Platform.userShell(cmd);
+  const p = spawn(sh.bin, sh.args, { ...sh.opts, cwd: cfg.repoPath, env: childEnv(), ...Platform.detachOpts() });
   dev.proc = p;
   publish('dev.start', `dev server starting — ${cmd}`, { command: cmd });
   p.on('exit', (code) => {
@@ -417,9 +413,9 @@ function startDev() {
 function stopDev() {
   if (devRunning()) {
     const p = dev.proc;
-    killGroup(p, 'SIGTERM');
+    Platform.killTree(p, 'SIGTERM');
     // escalate if the tree ignores SIGTERM (some dev servers do)
-    setTimeout(() => { if (dev.proc === p && !dev.exited) killGroup(p, 'SIGKILL'); }, 1500);
+    setTimeout(() => { if (dev.proc === p && !dev.exited) Platform.killTree(p, 'SIGKILL'); }, 1500);
     dev.exited = true; // reflect intent immediately in the UI
     dev.stopped = true; // deliberate stop — don't render it as a failure
   }
@@ -516,54 +512,29 @@ const server = createServer(async (req, res) => {
     const abs = resolve(cfg.repoPath, String(rel || ''));
     if (!abs.startsWith(cfg.repoPath + sep) || !existsSync(abs)) return json(res, 400, { error: 'path is not inside the repo' });
     if (mode === 'finder') {
-      spawn('open', ['-R', abs], { detached: true, stdio: 'ignore' }).unref();
+      Platform.reveal(abs);
       return json(res, 200, { ok: true });
     }
     const tpl = (cfg.editor?.command || '').trim();
     if (tpl) {
-      // single-quote the path so a filename containing $()/backticks/; can't be
+      // quote the path so a filename containing $()/backticks/; can't be
       // interpreted by the shell that runs the (user-authored) editor template
-      const sq = "'" + abs.replaceAll("'", "'\\''") + "'";
-      const cmd = tpl.replaceAll('{path}', sq).replaceAll('{line}', String(Number(line) || 1));
-      spawn('bash', ['-lc', cmd], { env: childEnv(), detached: true, stdio: 'ignore' }).unref();
+      const quoted = Platform.isWin ? `"${abs.replaceAll('"', '')}"` : "'" + abs.replaceAll("'", "'\\''") + "'";
+      const cmd = tpl.replaceAll('{path}', quoted).replaceAll('{line}', String(Number(line) || 1));
+      const sh = Platform.userShell(cmd);
+      spawn(sh.bin, sh.args, { ...sh.opts, env: childEnv(), stdio: 'ignore', ...Platform.detachOpts() }).unref();
     } else {
-      // no editor configured: `open` uses the file's default app, but source
-      // extensions (.ts/.sql/…) often have NO association and `open` fails
-      // silently — retry in the default text editor so the click always lands
-      const o = spawn('open', [abs], { detached: true, stdio: 'ignore' });
-      o.on('exit', (code) => { if (code) spawn('open', ['-t', abs], { detached: true, stdio: 'ignore' }).unref(); });
-      o.on('error', () => { /* open(1) missing — nothing sensible left to try */ });
-      o.unref();
+      Platform.openPath(abs); // default app; macOS retries in a text editor when nothing's associated
     }
     return json(res, 200, { ok: true });
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/pickfolder') { // native Finder folder dialog
-    if (process.platform !== 'darwin') return json(res, 400, { error: 'the folder picker needs macOS' });
+  if (req.method === 'POST' && url.pathname === '/api/pickfolder') { // native folder dialog
     if (pickerBusy) return json(res, 200, { error: 'a folder picker is already open — check your other windows' });
     pickerBusy = true;
-    // async spawn: the dialog blocks on the user; spawnSync would freeze the SSE bus
-    const p = spawn('osascript', ['-e', 'POSIX path of (choose folder with prompt "Choose the repo to work on")'], { env: childEnv() });
-    let out = '', err = '';
-    p.stdout.on('data', (d) => (out += d));
-    p.stderr.on('data', (d) => (err += d));
-    const timer = setTimeout(() => { try { p.kill('SIGKILL'); } catch { /* gone */ } }, 120000);
-    let done = false; // 'error' and 'close' can both fire — answer once
-    const finish = (body) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      pickerBusy = false;
-      json(res, 200, body);
-    };
-    p.on('error', () => finish({ error: 'could not open the folder picker' }));
-    p.on('close', (code) => {
-      const path = out.trim().replace(/\/$/, '');
-      if (code === 0 && path) return finish({ path });
-      if (/-128|cancell?ed/i.test(err)) return finish({ cancelled: true });
-      finish({ error: 'could not open the folder picker' });
-    });
-    return; // responds from the close handler
+    const r = await Platform.pickFolder(); // async — the dialog blocks on the user, never on the bus
+    pickerBusy = false;
+    return json(res, 200, r);
   }
 
   if (req.method === 'GET' && url.pathname === '/api/file') { // peek: first N lines, read-only
@@ -755,21 +726,8 @@ const server = createServer(async (req, res) => {
     const cfg = readCfg();
     const claudeBin = resolveClaude(splitCommand(cfg.agent?.command || 'claude').bin, true);
     if (!claudeBin) return json(res, 400, { error: 'Claude Code CLI not found — set the engine path in Settings, then Recheck' });
-    if (process.platform !== 'darwin')
-      return json(res, 400, { error: `open a terminal and run: ${claudeBin} /login` });
-    // A .command file opened with Terminal needs no Automation permission
-    // (AppleScript "do script" hangs on the TCC consent gate from a background process).
-    const scriptPath = join(__dirname, '.workloop', 'login.command');
-    writeFileSync(scriptPath, [
-      '#!/bin/bash',
-      'clear',
-      "printf '\\n  Sign in to Claude Code below, then come back to Workloop and re-run your task.\\n\\n'",
-      `"${claudeBin}" /login`,
-      '',
-    ].join('\n'));
-    chmodSync(scriptPath, 0o755);
-    const r = spawnSync('open', ['-a', 'Terminal', scriptPath], { encoding: 'utf8', timeout: 10000 });
-    if (r.status !== 0) return json(res, 500, { error: 'could not open Terminal: ' + ((r.stderr || r.error?.message || 'unknown').trim().split('\n')[0]).slice(0, 140) });
+    const r = Platform.openLoginTerminal(claudeBin, join(__dirname, '.workloop'));
+    if (r.error) return json(res, 400, { error: r.error });
     return json(res, 200, { ok: true });
   }
 

@@ -6,13 +6,9 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { childEnv } from './env.mjs';
 import { publish, publishLine } from './bus.mjs';
+import { userShell, killTree, detachOpts } from './platform.mjs';
 
 let cur = { proc: null, id: null, name: null, lines: [], exited: true, code: null, startedAt: 0, stopped: false };
-
-const killGroup = (proc, sig) => {
-  try { process.kill(-proc.pid, sig); }
-  catch { try { proc.kill(sig); } catch { /* gone */ } }
-};
 
 export const running = () => !!(cur.proc && !cur.exited);
 
@@ -31,7 +27,8 @@ export function run(cfg, id) {
   if (!cmd) return { error: 'command not found — it may have been edited; reopen the control center' };
   if (!cfg.repoPath || !existsSync(cfg.repoPath)) return { error: 'repoPath not set' };
   cur = { proc: null, id: cmd.id, name: cmd.name, lines: [], exited: false, code: null, startedAt: Date.now(), stopped: false };
-  const p = spawn('bash', ['-lc', cmd.cmd], { cwd: cfg.repoPath, env: childEnv(), detached: true });
+  const sh = userShell(cmd.cmd);
+  const p = spawn(sh.bin, sh.args, { ...sh.opts, cwd: cfg.repoPath, env: childEnv(), ...detachOpts() });
   cur.proc = p;
   publish('cmd.start', `${cmd.name} — ${cmd.cmd}`, { cmdId: cmd.id, name: cmd.name });
   const onData = (d) => {
@@ -61,8 +58,8 @@ export function run(cfg, id) {
 export function stop() {
   if (running()) {
     const p = cur.proc;
-    killGroup(p, 'SIGTERM');
-    setTimeout(() => { if (cur.proc === p && !cur.exited) killGroup(p, 'SIGKILL'); }, 1500);
+    killTree(p, 'SIGTERM');
+    setTimeout(() => { if (cur.proc === p && !cur.exited) killTree(p, 'SIGKILL'); }, 1500);
     cur.exited = true;
     cur.stopped = true;
   }

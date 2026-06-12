@@ -6,8 +6,9 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isWin, spawnToolSync } from './platform.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cacheFile = join(__dirname, '.workloop', 'env.json');
@@ -29,8 +30,10 @@ export function splitCommand(cmd = 'claude') {
   return { bin: parts[0] || 'claude', extraArgs: parts.slice(1) };
 }
 
-/** The user's real login-shell PATH (zsh first — macOS default — then bash). */
+/** The user's real login-shell PATH (zsh first — macOS default — then bash).
+    Windows has no login-shell PATH problem: the process env is already right. */
 export function loginPath(force = false) {
+  if (isWin) return process.env.PATH || '';
   if (!force) {
     const c = readCache();
     if (c.path) return c.path;
@@ -48,8 +51,8 @@ export function loginPath(force = false) {
 /** Env for child processes: current env + login PATH merged in front. */
 export function childEnv(force = false) {
   const seen = new Set();
-  const merged = [...loginPath(force).split(':'), ...(process.env.PATH || '').split(':')]
-    .filter((p) => p && !seen.has(p) && (seen.add(p) || true)).join(':');
+  const merged = [...loginPath(force).split(delimiter), ...(process.env.PATH || '').split(delimiter)]
+    .filter((p) => p && !seen.has(p) && (seen.add(p) || true)).join(delimiter);
   return { ...process.env, PATH: merged };
 }
 
@@ -57,7 +60,7 @@ export function childEnv(force = false) {
 export function resolveClaude(cfgCommand = 'claude', force = false) {
   const { bin } = splitCommand(cfgCommand);
   const explicit = expandTilde(bin);
-  if (explicit && explicit.includes('/') && existsSync(explicit)) { saveCache({ claude: explicit }); return explicit; }
+  if (explicit && /[\\/]/.test(explicit) && existsSync(explicit)) { saveCache({ claude: explicit }); return explicit; }
 
   if (!force) {
     const c = readCache();
@@ -65,23 +68,38 @@ export function resolveClaude(cfgCommand = 'claude', force = false) {
   }
 
   try {
-    const r = spawnSync('bash', ['-c', `command -v ${bin}`], { encoding: 'utf8', env: childEnv(force), timeout: 8000 });
-    const p = (r.stdout || '').trim();
-    if (p && existsSync(p)) { saveCache({ claude: p }); return p; }
+    if (isWin) {
+      // `where` lists every match; prefer the native .exe over the npm .cmd shim
+      const r = spawnSync('where.exe', [bin], { encoding: 'utf8', env: childEnv(force), timeout: 8000 });
+      const hits = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      const pick = hits.find((h) => h.toLowerCase().endsWith('.exe')) || hits.find((h) => h.toLowerCase().endsWith('.cmd')) || hits[0];
+      if (pick && existsSync(pick)) { saveCache({ claude: pick }); return pick; }
+    } else {
+      const r = spawnSync('bash', ['-c', `command -v ${bin}`], { encoding: 'utf8', env: childEnv(force), timeout: 8000 });
+      const p = (r.stdout || '').trim();
+      if (p && existsSync(p)) { saveCache({ claude: p }); return p; }
+    }
   } catch { /* fall through to known locations */ }
 
   const home = homedir();
-  const candidates = [
-    join(home, '.claude', 'local', 'claude'),
-    '/opt/homebrew/bin/claude',
-    '/usr/local/bin/claude',
-    join(home, '.local', 'bin', 'claude'),
-    join(home, '.npm-global', 'bin', 'claude'),
-  ];
-  try {
-    const nvmBase = join(home, '.nvm', 'versions', 'node');
-    if (existsSync(nvmBase)) for (const v of readdirSync(nvmBase)) candidates.push(join(nvmBase, v, 'bin', 'claude'));
-  } catch { /* no nvm */ }
+  const candidates = isWin
+    ? [
+      join(home, '.local', 'bin', 'claude.exe'),
+      join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'npm', 'claude.cmd'),
+    ]
+    : [
+      join(home, '.claude', 'local', 'claude'),
+      '/opt/homebrew/bin/claude',
+      '/usr/local/bin/claude',
+      join(home, '.local', 'bin', 'claude'),
+      join(home, '.npm-global', 'bin', 'claude'),
+    ];
+  if (!isWin) {
+    try {
+      const nvmBase = join(home, '.nvm', 'versions', 'node');
+      if (existsSync(nvmBase)) for (const v of readdirSync(nvmBase)) candidates.push(join(nvmBase, v, 'bin', 'claude'));
+    } catch { /* no nvm */ }
+  }
   for (const c of candidates) if (existsSync(c)) { saveCache({ claude: c }); return c; }
   return null;
 }
@@ -91,7 +109,7 @@ export function claudeInfo(cfgCommand = 'claude', force = false) {
   const path = resolveClaude(cfgCommand, force);
   if (!path) return { found: false, path: null, version: null };
   try {
-    const r = spawnSync(path, ['--version'], { encoding: 'utf8', env: childEnv(), timeout: 10000 });
+    const r = spawnToolSync(path, ['--version'], { encoding: 'utf8', env: childEnv(), timeout: 10000 });
     const version = ((r.stdout || r.stderr || '').trim().split('\n')[0] || null);
     return { found: true, path, version, ok: r.status === 0, supportsEffort: supportsEffort(path, force) };
   } catch {
@@ -107,7 +125,7 @@ function supportsEffort(path, force = false) {
     if (typeof c.supportsEffort === 'boolean' && c.supportsEffortFor === path) return c.supportsEffort;
   }
   try {
-    const r = spawnSync(path, ['--help'], { encoding: 'utf8', env: childEnv(), timeout: 10000, maxBuffer: 1024 * 1024 });
+    const r = spawnToolSync(path, ['--help'], { encoding: 'utf8', env: childEnv(), timeout: 10000, maxBuffer: 1024 * 1024 });
     const yes = /--effort\b/.test((r.stdout || '') + (r.stderr || ''));
     saveCache({ supportsEffort: yes, supportsEffortFor: path });
     return yes;

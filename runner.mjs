@@ -9,6 +9,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { childEnv, resolveClaude, splitCommand } from './env.mjs';
+import { userShell, spawnTool } from './platform.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cfg = JSON.parse(readFileSync(join(__dirname, 'workloop.config.json'), 'utf8'));
@@ -25,8 +26,9 @@ process.on('SIGTERM', () => { killAgent(); process.exit(143); });
 process.on('SIGINT', () => { killAgent(); process.exit(130); });
 let sawAuthError = false;
 const checkAuth = (s) => { if (/not logged in|please run \/login/i.test(s)) sawAuthError = true; };
-const sh = (cmd) => {
-  const r = spawnSync('bash', ['-lc', cmd], { cwd: repo, encoding: 'utf8', maxBuffer: 1024 * 1024 * 30, env: ENV });
+const sh = (cmd) => { // user-authored verify commands ONLY — internal git/gh go through shArgs
+  const s = userShell(cmd);
+  const r = spawnSync(s.bin, s.args, { ...s.opts, cwd: repo, encoding: 'utf8', maxBuffer: 1024 * 1024 * 30, env: ENV });
   return { code: r.status ?? 1, out: r.stdout || '', err: r.stderr || '' };
 };
 // shArgs: argv form, no shell — use whenever an argument carries user text
@@ -59,11 +61,11 @@ function handleLine(line) {
     const task = (state.tasks || []).find((t) => t.id === taskId);
     if (!task) return emit({ type: 'done', ok: false, reason: 'task not found — Rescan and try again' });
     if (!existsSync(repo)) return emit({ type: 'done', ok: false, reason: `repoPath not found: ${repo}` });
-    if (sh('git rev-parse --is-inside-work-tree').code !== 0)
+    if (shArgs('git', ['rev-parse', '--is-inside-work-tree']).code !== 0)
       return emit({ type: 'done', ok: false, reason: 'repoPath is not a git repository' });
 
     // Guard: a dirty tree means this run's commit would scoop up unrelated edits.
-    if (sh('git status --porcelain').out.trim())
+    if (shArgs('git', ['status', '--porcelain']).out.trim())
       return emit({
         type: 'done', ok: false,
         reason: 'working tree has uncommitted changes — commit or stash them first (if a previous run left edits behind, `git checkout .` discards them)',
@@ -81,7 +83,7 @@ function handleLine(line) {
 
     const branch = `${cfg.branchPrefix}/${task.source}-${slug(task.title)}-${task.id.slice(0, 4)}`;
     emit({ type: 'status', message: `Branch: ${branch}` });
-    if (sh(`git switch -c "${branch}"`).code !== 0) sh(`git switch "${branch}"`);
+    if (shArgs('git', ['switch', '-c', branch]).code !== 0) shArgs('git', ['switch', branch]);
 
     const dod = task.verifiable
       ? `DEFINITION OF DONE: the command \`${task.verifyCmd}\` exits 0 with no errors.`
@@ -115,7 +117,7 @@ ${loopRule}${todoRule}
 
     const code = await new Promise((resolve) => {
       let child;
-      try { child = spawn(claudeBin, args, { cwd: repo, env: ENV, stdio: ['ignore', 'pipe', 'pipe'] }); }
+      try { child = spawnTool(claudeBin, args, { cwd: repo, env: ENV, stdio: ['ignore', 'pipe', 'pipe'] }); }
       catch (e) { emit({ type: 'done', ok: false, reason: `could not start engine: ${e.message}` }); return resolve(-1); }
       agentChild = child;
       child.on('error', (e) => {
@@ -150,7 +152,7 @@ ${loopRule}${todoRule}
       emit({ type: 'status', message: 'Verifier passed.' });
     }
 
-    if (!sh('git status --porcelain').out.trim())
+    if (!shArgs('git', ['status', '--porcelain']).out.trim())
       return emit({ type: 'done', ok: false, reason: 'no file changes were made', branch });
 
     // Backlog tasks: deterministically check off the implemented item so the
@@ -171,7 +173,7 @@ ${loopRule}${todoRule}
 
     const type = ({ typescript: 'fix', test: 'fix', lint: 'style', build: 'fix', todo: 'chore', backlog: 'feat' })[task.source] || 'chore';
     const subject = `${type}: ${task.title.slice(0, 72)}`;
-    sh('git add -A');
+    shArgs('git', ['add', '-A']);
     // argv form — the title is user/scan text and must never reach a shell string
     const c = shArgs('git', ['commit', '-m', subject, '-m', `[workloop] task ${task.id}`]);
     if (c.code !== 0) return emit({ type: 'done', ok: false, reason: 'commit failed', branch, log: tail(c.err) });
@@ -179,9 +181,9 @@ ${loopRule}${todoRule}
 
     if (cfg.openPR) {
       emit({ type: 'status', message: 'Pushing and opening PR...' });
-      const p = sh(`git push -u origin "${branch}"`);
+      const p = shArgs('git', ['push', '-u', 'origin', branch]);
       if (p.code !== 0) return emit({ type: 'done', ok: true, branch, pr: null, note: 'committed locally; push failed: ' + tail(p.err, 4) });
-      const pr = sh(`gh pr create --fill --head "${branch}"`);
+      const pr = shArgs('gh', ['pr', 'create', '--fill', '--head', branch]);
       const url = (pr.out.match(/https?:\/\/\S+/) || [])[0] || null;
       return emit({ type: 'done', ok: true, branch, pr: url, note: url ? null : 'pushed; open the PR in your host UI' });
     }

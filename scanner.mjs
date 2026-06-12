@@ -2,12 +2,13 @@
 // scanner.mjs — inspect the repo and produce work-loop task cards.
 // Writes .workloop/tasks.json. No dependencies.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { childEnv } from './env.mjs';
+import { userShell } from './platform.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cfg = JSON.parse(readFileSync(join(__dirname, 'workloop.config.json'), 'utf8'));
@@ -23,8 +24,9 @@ if (!repo || !existsSync(repo)) {
 }
 
 const ENV = childEnv();
-function sh(cmd, cwd = repo) {
-  const r = spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', maxBuffer: 1024 * 1024 * 30, env: ENV });
+function sh(cmd, cwd = repo) { // user-authored verifier commands — a shell is correct here
+  const s = userShell(cmd);
+  const r = spawnSync(s.bin, s.args, { ...s.opts, cwd, encoding: 'utf8', maxBuffer: 1024 * 1024 * 30, env: ENV });
   return { code: r.status ?? 1, out: r.stdout || '', err: r.stderr || '' };
 }
 const id = (...p) => createHash('sha1').update(p.join('|')).digest('hex').slice(0, 8);
@@ -108,25 +110,45 @@ if (cfg.sources.build && runnable(cfg.verifier.build, 'build')) {
 }
 
 // --- TODO / FIXME / HACK comments (review-only) ---
+// Pure-Node walk (grep doesn't exist on Windows; this also drops the last
+// external tool the scanner needed besides git).
 if (cfg.sources.todos) {
   // user-dismissed TODOs stay in code but are hidden from the board
   let dismissed = [];
   try { dismissed = JSON.parse(readFileSync(join(stateDir, 'dismissed.json'), 'utf8')); } catch { /* none */ }
   const dismissedKeys = new Set(dismissed.map((d) => `${d.file}|${d.title}`));
-  const inc = ['ts', 'tsx', 'js', 'jsx', 'mjs', 'css', 'scss', 'md']
-    .map((e) => `--include="*.${e}"`).join(' ');
-  const { out } = sh(`grep -rInE "(TODO|FIXME|HACK)" ${inc} . 2>/dev/null | grep -v node_modules | head -n 60 || true`);
-  for (const ln of out.split('\n').filter(Boolean)) {
-    const m = ln.match(/^(.*?):(\d+):(.*)$/);
-    if (!m) continue;
-    const [, file, line, content] = m;
-    const cleanFile = file.replace(/^\.\//, '');
-    const title = content.trim().slice(0, 140);
-    if (dismissedKeys.has(`${cleanFile}|${title}`)) continue;
+  const TODO_EXT = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'css', 'scss', 'md']);
+  const TODO_SKIP = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '.expo', '.turbo', '.cache', 'out']);
+  const TODO_RE = /(TODO|FIXME|HACK)/;
+  const hits = [];
+  const stack = [''];
+  while (stack.length && hits.length < 60) {
+    const rel = stack.pop();
+    let entries = [];
+    try { entries = readdirSync(join(repo, rel), { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      if (hits.length >= 60) break;
+      if (e.isSymbolicLink()) continue;
+      const p = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { if (!TODO_SKIP.has(e.name) && !e.name.startsWith('.')) stack.push(p); continue; }
+      const dot = e.name.lastIndexOf('.');
+      if (dot <= 0 || !TODO_EXT.has(e.name.slice(dot + 1).toLowerCase())) continue;
+      let text;
+      try { text = readFileSync(join(repo, p), 'utf8'); } catch { continue; }
+      if (!TODO_RE.test(text)) continue;
+      const lines = text.split('\n');
+      for (let i = 0; i < lines.length && hits.length < 60; i++) {
+        if (TODO_RE.test(lines[i])) hits.push({ file: p, line: i + 1, content: lines[i] });
+      }
+    }
+  }
+  for (const h of hits) {
+    const title = h.content.trim().slice(0, 140);
+    if (dismissedKeys.has(`${h.file}|${title}`)) continue;
     add({
-      id: id('todo', file, line), source: 'todo', column: 'should-implement',
-      title, file: cleanFile, line: Number(line),
-      detail: `${cleanFile}:${line}`, verifiable: false, verifyCmd: null,
+      id: id('todo', h.file, String(h.line)), source: 'todo', column: 'should-implement',
+      title, file: h.file, line: h.line,
+      detail: `${h.file}:${h.line}`, verifiable: false, verifyCmd: null,
     });
   }
 }

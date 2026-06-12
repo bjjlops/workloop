@@ -4,13 +4,13 @@
 // so it survives server restarts). Read-only toolset by default, so chatting
 // is safe even while an agent run is rewriting the repo.
 
-import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { childEnv, resolveClaude, splitCommand } from './env.mjs';
 import { publish } from './bus.mjs';
 import { fromChatText } from './handoffs.mjs';
+import { spawnTool, killTree, detachOpts } from './platform.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FILE = join(__dirname, '.workloop', 'chat.json');
@@ -26,19 +26,14 @@ let writingNow = false; // true while a write-capable chat turn is in flight
 export const busy = () => !!child;
 export const busyWriting = () => writingNow; // a write-tool chat holds the single-writer slot
 
-const killGroup = (proc, sig) => {
-  try { process.kill(-proc.pid, sig); }
-  catch { try { proc.kill(sig); } catch { /* gone */ } }
-};
-
-export function shutdown() { if (child) killGroup(child, 'SIGTERM'); }
+export function shutdown() { if (child) killTree(child, 'SIGTERM'); }
 
 export function history() {
   return { sessionId: sess.sessionId, startedAt: sess.startedAt, messages: sess.messages };
 }
 
 export function reset() {
-  if (child) killGroup(child, 'SIGTERM');
+  if (child) killTree(child, 'SIGTERM');
   sess = { sessionId: null, startedAt: Date.now(), messages: [] };
   save();
   return { ok: true };
@@ -95,7 +90,7 @@ export function send(req, res, { text, cfg }) {
       ...extraArgs,
     ];
     let c;
-    try { c = spawn(claude, args, { cwd: cfg.repoPath, env: childEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'] }); }
+    try { c = spawnTool(claude, args, { cwd: cfg.repoPath, env: childEnv(), ...detachOpts(), stdio: ['ignore', 'pipe', 'pipe'] }); }
     catch (e) {
       write({ type: 'error', message: `could not start engine: ${e.message}` });
       write({ type: 'done', ok: false });
@@ -118,8 +113,8 @@ export function send(req, res, { text, cfg }) {
       res.end();
     });
     const timer = setTimeout(() => {
-      killGroup(c, 'SIGTERM');
-      setTimeout(() => killGroup(c, 'SIGKILL'), 1500);
+      killTree(c, 'SIGTERM');
+      setTimeout(() => killTree(c, 'SIGKILL'), 1500);
       errBuf += '\n[timed out]';
     }, cfg.chat?.timeoutMs ?? 180000);
 
@@ -181,7 +176,7 @@ export function send(req, res, { text, cfg }) {
       res.end();
     });
 
-    req.on('close', () => { if (child === c) { killGroup(c, 'SIGTERM'); } });
+    req.on('close', () => { if (child === c) { killTree(c, 'SIGTERM'); } });
   };
 
   turn(true);
