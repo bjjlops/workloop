@@ -117,6 +117,7 @@ const Viz = (() => {
     },
     flyTo: (p) => !!(active().flyTo && active().flyTo(p)),
     spotlight: (p) => each((v) => v.spotlight && v.spotlight(p)),
+    setSelected: (p) => each((v) => v.setSelected && v.setSelected(p)),
     setExtFilter: (s) => each((v) => v.setExtFilter && v.setExtFilter(s)),
     setPathFilter: (p) => each((v) => v.setPathFilter && v.setPathFilter(p)),
     setTaskMarks: (l) => each((v) => v.setTaskMarks && v.setTaskMarks(l)),
@@ -178,4 +179,60 @@ const Ping = (() => {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build);
   else build();
   return { cfg };
+})();
+
+/* Trails — what the path-lighting MEANS, user-tunable from Appearance.
+   hover/selected trails + the agent's read/edit/done stream colors.
+   Both galaxies read Trails.cfg live; persists as one blob (wl.trails). */
+const Trails = (() => {
+  const DEF = { hover: '#3b82f6', selected: '#3b82f6', read: '#ff9f43', edit: '#ff4d4d', done: '#22c55e', holdMs: 2000 };
+  const cfg = { ...DEF };
+  try { Object.assign(cfg, JSON.parse(localStorage.getItem('wl.trails') || '{}')); } catch { /* fresh */ }
+  const COLORS = [
+    ['hover', 'hover trail'],
+    ['selected', 'selected trail'],
+    ['read', 'agent reading'],
+    ['edit', 'agent editing'],
+    ['done', 'finished flash'],
+  ];
+  const save = () => localStorage.setItem('wl.trails', JSON.stringify(cfg));
+  const c3 = (key) => { // hex -> [r,g,b] 0..1 for the 3D view
+    const h = cfg[key] || DEF[key];
+    return [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  };
+  function build() {
+    const host = $('#trail-tweaks');
+    if (!host) return;
+    for (const [key, label] of COLORS) {
+      const row = document.createElement('div');
+      row.className = 'field';
+      row.innerHTML = `<label for="ft-${key}">${label}</label>
+        <div class="qrow"><input type="color" id="ft-${key}" /><span class="qname" id="ftv-${key}"></span></div>`;
+      host.appendChild(row);
+      const r = row.querySelector('input'), val = row.querySelector('.qname');
+      r.value = cfg[key] || DEF[key];
+      val.textContent = r.value;
+      r.addEventListener('input', () => {
+        cfg[key] = r.value;
+        val.textContent = r.value;
+        save();
+      });
+    }
+    const row = document.createElement('div');
+    row.className = 'field';
+    row.innerHTML = `<label for="ft-hold">finished hold</label>
+      <div class="qrow"><input type="range" id="ft-hold" min="500" max="5000" step="100" /><span class="qname" id="ftv-hold"></span></div>`;
+    host.appendChild(row);
+    const hr = row.querySelector('input'), hv = row.querySelector('.qname');
+    hr.value = String(cfg.holdMs);
+    hv.textContent = (cfg.holdMs / 1000).toFixed(1) + 's';
+    hr.addEventListener('input', () => {
+      cfg.holdMs = parseFloat(hr.value);
+      hv.textContent = (cfg.holdMs / 1000).toFixed(1) + 's';
+      save();
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build);
+  else build();
+  return { cfg, c3 };
 })();

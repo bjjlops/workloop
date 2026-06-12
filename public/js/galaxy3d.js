@@ -103,6 +103,12 @@ const Repo3D = (() => {
   let pathFilter = null, pathAnc = null;
   let taskMarks = [], markVs = [], pinPaths = new Set(), pinVs = [];
   let dirtyPaths = new Set(), dirtyVs = []; // uncommitted files — slow alert ring
+  let selectedPath = null, selV = null; // node-menu selection — blue trail
+  const activity = new Map(); // path -> { op: 'read'|'edit', t } — live agent tool attribution
+  let doneFlashUntil = 0; // run finished: hold streams in the done color, then retract
+  const TRAILS_DEF = { hover: '#3b82f6', selected: '#3b82f6', read: '#ff9f43', edit: '#ff4d4d', done: '#22c55e', holdMs: 2000 };
+  const tc3 = (k) => (typeof Trails !== 'undefined' ? Trails.c3(k) : hex3(TRAILS_DEF[k]));
+  const trailsCfg = () => (typeof Trails !== 'undefined' ? Trails.cfg : TRAILS_DEF);
   const dirtyWaves = []; // light-bending shockwaves rippling out from dirty nodes
   let lastWaveCyc = -1;
   const waveU = new Float32Array(16); // 4 × vec4 uniform scratch
@@ -696,6 +702,8 @@ const Repo3D = (() => {
     else if (B) B.strmN = 0;
     if (spotPath) buildSpot(); // spotlight survives layout switches + reloads too
     else if (B) B.spotN = 0;
+    buildSelect(); // selection trail re-anchors; hover is transient — drop it
+    if (B) B.hovN = 0;
     resolveMarks(); // task badges + pins re-anchor the same way
   }
   const morphNow = (now) => clamp((now - morphT0) / MORPH_MS, 0, 1);
@@ -743,17 +751,23 @@ const Repo3D = (() => {
     pulses.push({ p: [...c.pts[c.pts.length - 1]], t0: performance.now(), dur: 900, c: c.kind === 'deleted' ? TH.deleted : TH.changed, r0: c.v.r * 1.5, r1: c.v.r * 7 });
     buildStreams();
   }
-  function buildStreams() { // bright animated edges along every path being edited
+  function buildStreams() { // bright animated edges along every path the agent touches
     const gl = env.gl;
-    const chains = [];
-    for (const [path] of changed) {
-      const v = vByPath.get(path) || (() => { let n = byPath.get(path); while (n && !vByPath.has(n.path)) n = n.parent; return n && vByPath.get(n.path); })();
-      if (v) chains.push(v);
-      if (chains.length >= 16) break;
-    }
+    const done = doneFlashUntil > performance.now();
+    const seen = new Set();
+    const chains = []; // [v, color] — git-detected changes ∪ live tool activity
+    const add = (path, op) => {
+      if (chains.length >= 16) return;
+      const v = nearestVis(path);
+      if (!v || seen.has(v.idx)) return;
+      seen.add(v.idx);
+      // meaning over identity: read = orange, edit = red; finish holds everything green
+      chains.push([v, brite(done ? tc3('done') : tc3(op), 0.25)]);
+    };
+    for (const [path] of changed) add(path, activity.get(path)?.op || 'edit');
+    for (const [path, a] of activity) if (!changed.has(path)) add(path, a.op);
     const segs = [];
-    for (const v of chains) {
-      const col = brite(TH.pal[v.ext] || TH.pal.other, 0.45);
+    for (const [v, col] of chains) {
       for (let u = v; u.parentV; u = u.parentV) segs.push([u.parentV, u, col]);
     }
     B.strmN = segs.length * LSEG * 2;
@@ -812,6 +826,49 @@ const Repo3D = (() => {
     };
     up('spF', f); up('spT', t); up('spC', c); up('spM', m);
     B.spotVAO = vao([[0, 'spF', 3], [1, 'spT', 3], [2, 'spC', 3], [3, 'spM', 4]]);
+  }
+  function buildChainBatch(v, color, fKey, tKey, cKey, mKey, vaoKey) { // shared recipe for hover/selection trails
+    if (!B) return 0;
+    if (!v || v.idx === 0) return 0;
+    const segs = [];
+    for (let u = v; u.parentV; u = u.parentV) segs.push([u.parentV, u]);
+    const n = segs.length * LSEG * 2;
+    if (!n) return 0;
+    const gl = env.gl;
+    const f = new Float32Array(n * 3), t = new Float32Array(n * 3), c = new Float32Array(n * 3), m = new Float32Array(n * 4);
+    const vtx = { i: 0 };
+    for (const [p, ch] of segs) emitEdge(p, ch, color, f, t, c, m, vtx);
+    const up = (key, data) => {
+      if (B[key] && B.caps[key] >= data.byteLength) GL3D.sub(gl, B[key], data);
+      else { B[key] = GL3D.buf(gl, data, true); B.caps[key] = data.byteLength; }
+    };
+    up(fKey, f); up(tKey, t); up(cKey, c); up(mKey, m);
+    B[vaoKey] = vao([[0, fKey, 3], [1, tKey, 3], [2, cKey, 3], [3, mKey, 4]]);
+    return n;
+  }
+  function buildHover() {
+    B && (B.hovN = (hoverV && ready) ? buildChainBatch(hoverV, tc3('hover'), 'hvF', 'hvT', 'hvC', 'hvM', 'hovVAO') : 0);
+  }
+  function buildSelect() {
+    selV = selectedPath ? nearestVis(selectedPath) : null;
+    if (selV && selV.idx === 0) selV = null;
+    B && (B.selN = (selV && ready) ? buildChainBatch(selV, tc3('selected'), 'slF', 'slT', 'slC', 'slM', 'selVAO') : 0);
+  }
+  function setSelected(path) {
+    selectedPath = path || null;
+    if (!ready) return;
+    buildSelect();
+    wake();
+  }
+  function fileActivity(path, op) { // live attribution from the runner's tool events
+    if (!path) return;
+    const prev = activity.get(path);
+    const next = prev?.op === 'edit' ? 'edit' : (op === 'edit' ? 'edit' : 'read'); // edits don't demote
+    activity.set(path, { op: next, t: performance.now() });
+    if (!ready) return;
+    clearTimeout(fileActivity._t); // debounce bursts of tool events
+    fileActivity._t = setTimeout(buildStreams, 120);
+    wake();
   }
   function setExtFilter(exts) {
     extFilter = exts && exts.size ? exts : null;
@@ -947,14 +1004,23 @@ const Repo3D = (() => {
       pollTimer = null;
       setTimeout(reload, ok === true ? 1900 : 900); // let the show play, then refresh (2D parity)
     }
+    const hold = ok ? trailsCfg().holdMs : 600;
     if (ok) {
+      const done = tc3('done');
       for (const [, ch] of changed) {
-        pulses.push({ p: [posNow[ch.idx * 3], posNow[ch.idx * 3 + 1], posNow[ch.idx * 3 + 2]], t0: performance.now() + Math.random() * 350, dur: 1100, c: TH.success, r0: 4, r1: 26 });
+        pulses.push({ p: [posNow[ch.idx * 3], posNow[ch.idx * 3 + 1], posNow[ch.idx * 3 + 2]], t0: performance.now() + Math.random() * 350, dur: 1100, c: done, r0: 4, r1: 26 });
       }
-      pulses.push({ p: [0, 0, 0], t0: performance.now(), dur: 1600, c: TH.success, r0: 20, r1: boundR * 0.9 });
+      pulses.push({ p: [0, 0, 0], t0: performance.now(), dur: 1600, c: done, r0: 20, r1: boundR * 0.9 });
       tick('✓ run complete');
+      doneFlashUntil = performance.now() + hold; // every live trail holds the finish color…
+      if (ready) buildStreams();
     }
-    setTimeout(() => { changed.clear(); B && (B.strmN = 0); }, 1500);
+    setTimeout(() => { // …then retracts
+      doneFlashUntil = 0;
+      changed.clear();
+      activity.clear();
+      B && (B.strmN = 0);
+    }, hold);
   }
   async function poll() {
     let r;
@@ -962,6 +1028,12 @@ const Repo3D = (() => {
     for (const { file, kind } of r.changed || []) {
       if (!changed.has(file) && !comets.some((c) => c.v.n.path === file)) spawnComet(file, kind);
     }
+    let swept = false; // read-only attention drifts away after ~6s untouched
+    const pnow = performance.now();
+    for (const [p, a] of activity) {
+      if (a.op === 'read' && pnow - a.t > 6000 && !changed.has(p)) { activity.delete(p); swept = true; }
+    }
+    if (swept && ready) buildStreams();
     if (r.head && lastHead && r.head !== lastHead) reload(); // the runner committed
     lastHead = r.head || lastHead;
   }
@@ -1180,6 +1252,7 @@ const Repo3D = (() => {
     const v = pick(sx, sy);
     if (v === hoverV) { if (v && !pinned) showTip(v, sx, sy); return; }
     hoverV = v;
+    if (ready) buildHover(); // animated trail along the hovered ancestry
     shell.style.cursor = v ? 'pointer' : 'grab';
     if (hoverCb) { // breadcrumb feed — agg nodes report their host dir (2D parity)
       hoverCb(v ? { path: v.kind === 2 ? v.parentV.n.path : v.n.path, isDir: v.kind >= 1 } : null);
@@ -1379,6 +1452,20 @@ const Repo3D = (() => {
       gl.uniform1f(P.line.u.uFog, 0);
       gl.bindVertexArray(B.spotVAO);
       gl.drawArrays(gl.LINES, 0, B.spotN);
+    }
+    if (B.selN && B.selVAO) { // selection trail (node menu open)
+      gl.uniform1f(P.line.u.uAlpha, 1.3 * fxA);
+      gl.uniform1f(P.line.u.uShimmer, 1.1);
+      gl.uniform1f(P.line.u.uFog, 0);
+      gl.bindVertexArray(B.selVAO);
+      gl.drawArrays(gl.LINES, 0, B.selN);
+    }
+    if (B.hovN && B.hovVAO) { // hover trail
+      gl.uniform1f(P.line.u.uAlpha, 1.0 * fxA);
+      gl.uniform1f(P.line.u.uShimmer, 1.2);
+      gl.uniform1f(P.line.u.uFog, 0);
+      gl.bindVertexArray(B.hovVAO);
+      gl.drawArrays(gl.LINES, 0, B.hovN);
     }
 
     // nodes: glow halo -> body -> white-hot heart
@@ -1617,6 +1704,7 @@ const Repo3D = (() => {
     runStarted, runEnded, refit,
     allPaths, flyTo, spotlight, setExtFilter, setHeat,
     setPathFilter, setTaskMarks, setPins, setDirty,
+    setSelected, fileActivity,
     onHoverChange: (fn) => { hoverCb = fn; },
     onFileClick: (fn) => { fileClickCb = fn; },
     onNodeMenu: (fn) => { menuCb = fn; },

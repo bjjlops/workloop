@@ -94,6 +94,10 @@ const RepoViz = (() => {
   const sprites = new Map();
   const particles = [], comets = [], cometQueue = [], pendingComets = [], pulses = [];
   let spotPath = null, spotChain = null, extFilter = null, hoverCb = null, fileClickCb = null;
+  let selPath = null, selChain = null; // node-menu selection — blue trail
+  const activity = new Map(); // path -> { op: 'read'|'edit', t } — live agent tool attribution
+  const TRAILS_DEF = { hover: '#3b82f6', selected: '#3b82f6', read: '#ff9f43', edit: '#ff4d4d', done: '#22c55e', holdMs: 2000 };
+  const trailsCfg = () => (typeof Trails !== 'undefined' ? Trails.cfg : TRAILS_DEF);
   let menuCb = null, pathFilter = null, pathAnc = null, taskMarks = new Map(), pinSet = new Set();
   let dirtySet = new Set(); // uncommitted files — slow alert ring
   const waves = []; // light-bending shockwaves rippling out from dirty nodes
@@ -308,6 +312,7 @@ const RepoViz = (() => {
     geomGen++;
     if (streams.size || changedMap.size) rebuildStreams(); // re-resolve chains against fresh vByPath
     if (spotPath) spotChain = chainOf(spotPath);           // spotlight survives relayouts too
+    if (selPath) selChain = chainOf(selPath);              // selection trail too
     const now = performance.now();
     if (opts.intro && !REDUCED) {
       introT0 = now;
@@ -578,11 +583,18 @@ const RepoViz = (() => {
     }
     bctx.globalAlpha = 1;
 
-    if (hoverV) { // path back to the root
-      bctx.strokeStyle = withAlpha(THEME.accent, 0.85);
+    if (hoverV && (REDUCED || sceneryQ() === 0)) { // static fallback — the animated trail lives on the fx layer
+      bctx.strokeStyle = withAlpha(trailsCfg().hover, 0.85);
       bctx.lineWidth = 1.6 / cam.k;
       bctx.beginPath();
       for (let v = hoverV; v.parentV; v = v.parentV) linkPath(bctx, v.parentV, v);
+      bctx.stroke();
+    }
+    if (selChain && selChain.length > 1 && (REDUCED || sceneryQ() === 0)) { // selection fallback
+      bctx.strokeStyle = withAlpha(trailsCfg().selected, 0.9);
+      bctx.lineWidth = 1.8 / cam.k;
+      bctx.beginPath();
+      for (let i = 1; i < selChain.length; i++) linkPath(bctx, selChain[i - 1], selChain[i]);
       bctx.stroke();
     }
 
@@ -878,20 +890,37 @@ const RepoViz = (() => {
     s.gen = geomGen;
   }
 
-  function rebuildStreams() { // on changedMap mutation / relayout — never per frame
-    const alive = [...changedMap.entries()].sort((a, b) => b[1].t0 - a[1].t0).slice(0, ST_MAX);
+  function rebuildStreams() { // on changedMap/activity mutation / relayout — never per frame
+    const T = trailsCfg();
+    const cand = new Map(); // path -> sort time; git-detected changes ∪ live tool activity
+    for (const [path, info] of changedMap) cand.set(path, info.t0);
+    for (const [path, a] of activity) cand.set(path, Math.max(cand.get(path) || 0, a.t));
+    const alive = [...cand.entries()].sort((a, b) => b[1] - a[1]).slice(0, ST_MAX);
     const keep = new Set();
-    for (const [path, info] of alive) {
+    for (const [path] of alive) {
       keep.add(path);
       let s = streams.get(path);
       if (!s) streams.set(path, (s = { a: 0, phase: hashPhase(path), flash: 0 }));
       s.on = true;
-      s.color = info.kind === 'deleted' ? THEME.deleted : (THEME.pal[extOf(path.slice(path.lastIndexOf('/') + 1))] || THEME.pal.other);
+      const info = changedMap.get(path);
+      // meaning over identity: read = orange, edit = red (deleted keeps its own tone)
+      const op = activity.get(path)?.op || 'edit';
+      s.color = info?.kind === 'deleted' ? THEME.deleted : (T[op] || T.edit);
       s.bcol = bright(s.color);
       s.chain = chainOf(path);
       s.gen = -1; // geometry rebuilds lazily in drawStreams
     }
     for (const [path, s] of streams) if (!keep.has(path)) s.on = false; // 600ms fade-out
+  }
+
+  function fileActivity(path, op) { // live attribution from the runner's tool events
+    if (!bctx || !path) return;
+    const prev = activity.get(path);
+    // an edit outranks a read; a later read does NOT demote an edited file
+    const next = prev?.op === 'edit' ? 'edit' : (op === 'edit' ? 'edit' : 'read');
+    activity.set(path, { op: next, t: performance.now() });
+    rebuildStreams();
+    wake();
   }
 
   function strokeStream(s, tweening) {
@@ -901,8 +930,50 @@ const RepoViz = (() => {
     fctx.stroke();
   }
 
+  function strokeChainFx(chain, colorHex, alpha, now, phase, endRing) {
+    // the work-stream recipe (halo + fiber + marching dash), for hover/selection
+    const trace = () => { fctx.beginPath(); traceChain(fctx, chain, true); fctx.stroke(); };
+    const ph = phase * 6.2832;
+    fctx.lineCap = 'round';
+    fctx.strokeStyle = colorHex;
+    fctx.lineWidth = 8 / cam.k; // halo
+    fctx.globalAlpha = ga(alpha * (0.10 + 0.05 * Math.sin(now / 430 + ph)));
+    trace();
+    fctx.lineWidth = 2.4 / cam.k; // fiber body
+    fctx.globalAlpha = ga(alpha * 0.25);
+    trace();
+    DASH[0] = 10 / cam.k; DASH[1] = 26 / cam.k; // marching core, root -> leaf
+    fctx.setLineDash(DASH);
+    fctx.lineDashOffset = -((now * 0.13 + phase * 36) % 36) / cam.k;
+    fctx.strokeStyle = bright(colorHex);
+    fctx.lineWidth = 1.6 / cam.k;
+    fctx.globalAlpha = ga(alpha * 0.9);
+    trace();
+    fctx.setLineDash(NODASH);
+    if (endRing) {
+      const end = chain[chain.length - 1];
+      fctx.globalAlpha = ga(alpha * 0.8);
+      fctx.lineWidth = 1.6 / cam.k;
+      fctx.beginPath();
+      fctx.arc(end.x, end.y, end.r + 4 / cam.k, 0, 6.2832);
+      fctx.stroke();
+    }
+    fctx.globalAlpha = 1;
+  }
+
+  let lastSweep = 0;
   function drawStreams(now, dt) {
     if (!streams.size) return;
+    if (now - lastSweep > 500) { // read-only attention drifts away after ~6s untouched
+      lastSweep = now;
+      for (const [p, a] of activity) {
+        if (a.op === 'read' && now - a.t > 6000 && !changedMap.has(p)) {
+          activity.delete(p);
+          const s = streams.get(p);
+          if (s) s.on = false; // built-in 600ms retract
+        }
+      }
+    }
     const tweening = !!(introT0 || layoutT0);
     const mw = W / 2 / cam.k + 40, mh = H / 2 / cam.k + 40;
     fctx.lineCap = 'round';
@@ -915,9 +986,11 @@ const RepoViz = (() => {
       if (!s.chain) continue;
       if (!tweening && s.gen !== geomGen) streamGeom(s);
       if (s.b && (s.b[2] < cam.x - mw || s.b[0] > cam.x + mw || s.b[3] < cam.y - mh || s.b[1] > cam.y + mh)) continue;
-      const hot = s.flash && now - s.flash < 450; // success: flash green before fading
-      const col = hot ? THEME.success : s.color;
-      const bcl = hot ? THEME.successBright : s.bcol;
+      const T = trailsCfg();
+      const hot = s.flash && now - s.flash < T.holdMs; // success: hold the finish color…
+      if (s.flash && !hot && s.on) s.on = false;       // …then retract the stream
+      const col = hot ? T.done : s.color;
+      const bcl = hot ? bright(T.done) : s.bcol;
       const ph = s.phase * 6.2832;
       fctx.strokeStyle = col;
       if (REDUCED) { // static soft highlight, no marching light
@@ -983,7 +1056,7 @@ const RepoViz = (() => {
   }
 
   const flicking = () => flickSet && performance.now() - flickT0 < 700;
-  const onlyBreathing = () => !particles.length && !comets.length && !flicking() && !streams.size && !pulses.length && !waves.length && !(active > 0 && changedMap.size);
+  const onlyBreathing = () => !particles.length && !comets.length && !flicking() && !streams.size && !pulses.length && !waves.length && !hoverV && !selChain && !(active > 0 && changedMap.size);
   function fxActive() {
     if (!visRoot || document.hidden) return false;
     if (particles.length || comets.length || cometQueue.length || flicking() || streams.size || pulses.length || waves.length) return true;
@@ -1011,6 +1084,16 @@ const RepoViz = (() => {
     }
 
     drawStreams(now, dt); // liquid light along every active work path
+
+    if (!REDUCED && sceneryQ() > 0) { // hover + selection trails — same liquid light, your colors
+      const T = trailsCfg();
+      if (selChain && selChain.length > 1) strokeChainFx(selChain, T.selected, 1, now, hashPhase(selPath || 'sel'), true);
+      if (hoverV && hoverV.parentV && (!selChain || hoverV !== selChain[selChain.length - 1])) {
+        const chain = [];
+        for (let u = hoverV; u; u = u.parentV) chain.unshift(u);
+        if (chain.length > 1) strokeChainFx(chain, T.hover, 0.8, now, hashPhase(hoverV.n?.path || 'hov'), false);
+      }
+    }
 
     for (const [p, info] of changedMap) { // amber pulse on files being edited right now
       const v = vByPath.get(p);
@@ -1340,14 +1423,15 @@ const RepoViz = (() => {
     active--;
     const snap = snapshots.pop() || new Set();
     const delta = [...touched].filter((p) => !snap.has(p));
-    if (ok === true && delta.length) {
+    if (ok === true) {
       const fnow = performance.now();
-      for (const p of delta) { const s = streams.get(p); if (s) s.flash = fnow; } // green farewell
+      for (const [, s] of streams) if (s.on) s.flash = fnow; // finish-color farewell on EVERY live trail (reads too)
+      activity.clear();
       delta.forEach((p, i) => {
         completed.add(p);
         setTimeout(() => {
           const v = vByPath.get(p);
-          if (v) burst(v, THEME.success);
+          if (v) burst(v, trailsCfg().done);
           dirtyBase = true;
           wake();
         }, i * 90);
@@ -1357,6 +1441,7 @@ const RepoViz = (() => {
       flickT0 = performance.now();
       wake();
     }
+    if (ok !== true) { activity.clear(); rebuildStreams(); } // no celebration — read trails just retract
     if (active === 0) {
       clearInterval(pollTimer);
       pollTimer = null;
@@ -1627,6 +1712,13 @@ const RepoViz = (() => {
     wake();
   }
 
+  function setSelected(path) {
+    selPath = path || null;
+    selChain = selPath && bctx ? chainOf(selPath) : null;
+    dirtyBase = true;
+    if (bctx) wake();
+  }
+
   function setExtFilter(exts) {
     extFilter = exts && exts.size ? exts : null;
     dirtyBase = true;
@@ -1677,6 +1769,7 @@ const RepoViz = (() => {
     init, reload: () => load(false, false), runStarted, runEnded, retheme, setInsets, resize,
     allPaths, flyTo, spotlight, setExtFilter, setHeat,
     setPathFilter, setTaskMarks, setPins, setDirty,
+    setSelected, fileActivity,
     onHoverChange: (fn) => { hoverCb = fn; },
     onFileClick: (fn) => { fileClickCb = fn; },
     onNodeMenu: (fn) => { menuCb = fn; },

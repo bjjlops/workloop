@@ -974,6 +974,7 @@ const server = createServer(async (req, res) => {
       try { o = JSON.parse(line); } catch { return; }
       if (o.type === 'status') publish('run.status', o.message || '', { taskId: id });
       else if (o.type === 'agent') publishLine('run.agent', o.message || '', { taskId: id });
+      else if (o.type === 'file' && o.path) publish('run.file', `${o.op} ${o.path}`, { taskId: id, op: o.op, path: o.path });
       else if (o.type === 'done' && !doneSeen) {
         doneSeen = true;
         publish('run.done',

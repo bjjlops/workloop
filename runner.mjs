@@ -4,7 +4,7 @@
 // Safety: only ever creates a branch + local commit (+ optional PR). Never merges,
 // deploys, or runs migrations.
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -40,6 +40,30 @@ const shArgs = (file, args) => {
 const slug = (s) => ((s || 'task').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task');
 const tail = (s, n = 20) => s.split('\n').filter((l) => l.trim()).slice(-n).join('\n');
 
+// tool name -> galaxy stream meaning. Bash is deliberately absent: a shell
+// command may touch many files or none — git polling attributes those instead.
+const FILE_OPS = { Read: 'read', Edit: 'edit', Write: 'edit', MultiEdit: 'edit', NotebookEdit: 'edit' };
+// the agent reports CANONICAL absolute paths (macOS: /tmp -> /private/tmp) —
+// match against the configured root AND its realpath, or events vanish silently
+const repoReal = (() => { try { return realpathSync(repo); } catch { return repo; } })();
+function relToRepo(p) {
+  for (const root of [repo, repoReal]) {
+    if (p.startsWith(root + '/')) return p.slice(root.length + 1);
+  }
+  return null;
+}
+function fileEvent(b) {
+  const op = FILE_OPS[b.name];
+  if (!op) return;
+  let p = b.input?.file_path || b.input?.path;
+  if (!p || typeof p !== 'string') return;
+  if (p.startsWith('/')) {
+    p = relToRepo(p);
+    if (!p) return; // outside the repo — nothing to light up
+  }
+  emit({ type: 'file', op, path: p });
+}
+
 function handleLine(line) {
   if (!line.trim()) return;
   checkAuth(line);
@@ -48,7 +72,10 @@ function handleLine(line) {
   if (o.type === 'assistant' && o.message?.content) {
     for (const b of o.message.content) {
       if (b.type === 'text' && b.text?.trim()) emit({ type: 'agent', message: b.text.trim().slice(0, 400) });
-      else if (b.type === 'tool_use') emit({ type: 'agent', message: `> ${b.name}${b.input?.command ? ': ' + String(b.input.command).slice(0, 90) : ''}` });
+      else if (b.type === 'tool_use') {
+        emit({ type: 'agent', message: `> ${b.name}${b.input?.command ? ': ' + String(b.input.command).slice(0, 90) : ''}` });
+        fileEvent(b);
+      }
     }
   } else if (o.type === 'result' && o.subtype && o.subtype !== 'success') {
     emit({ type: 'agent', message: `result: ${o.subtype}` });

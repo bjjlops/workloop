@@ -44,6 +44,11 @@ const Bus = (() => {
 
   on('run.start', (ev) => syncRun(ev.data || { taskId: '?' }));
   on('run.done', (ev) => syncRun(null, ev.data ? !!ev.data.ok : null));
+  on('run.file', (ev) => { // live read/edit attribution for the galaxy trails
+    if (!state.running || !ev.data?.path) return; // ring replays of finished runs stay inert
+    RepoViz.fileActivity?.(ev.data.path, ev.data.op);
+    if (typeof Repo3D !== 'undefined') Repo3D.fileActivity?.(ev.data.path, ev.data.op);
+  });
 
   return { connect, on };
 })();

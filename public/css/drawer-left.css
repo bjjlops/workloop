@@ -59,6 +59,12 @@
 .detectmsg:empty { display: none }
 .subh2 { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin-top: 6px; border-bottom: 1px solid var(--line); padding-bottom: 5px }
 
+/* color settings (activity trails) */
+.field input[type="color"] {
+  width: 44px; height: 26px; padding: 1px; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg1, transparent); cursor: pointer;
+}
+
 /* repo picker */
 .repolist { display: flex; flex-direction: column }
 .repolist:empty { display: none }

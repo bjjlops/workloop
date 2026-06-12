@@ -137,7 +137,11 @@ const Search = (() => {
   }
 
   /* ----- node menu (left-click a file or right-click anything, both views) ----- */
-  function closeMenu() { pop.hidden = true; pop.classList.remove('wide'); }
+  function closeMenu() {
+    pop.hidden = true;
+    pop.classList.remove('wide');
+    Viz.setSelected(null); // selection trail follows the menu's lifetime
+  }
   function place(sx, sy) {
     const shell = $('#stage').getBoundingClientRect(); // pop lives in #stage — covers both views
     pop.style.left = Math.max(8, Math.min(sx + 14, shell.width - pop.offsetWidth - 12)) + 'px';
@@ -146,6 +150,7 @@ const Search = (() => {
   function showMenu(info, sx, sy) {
     if (!info) { closeMenu(); return; }
     menuXY = [sx, sy];
+    Viz.setSelected(info.path); // blue trail while this node owns the menu
     const tasks = (state.tasks || []).filter((t) => t.file === info.path);
     let meta, acts;
     if (info.isDir) {
