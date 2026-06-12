@@ -2,6 +2,42 @@
    and the repo picker ("Your repos": current + recents instantly, plus every
    git repo found on this machine — one click switches workloop to it). */
 
+/* ----- engine command: structured fields <-> composed command string ----- */
+const ENGINE_MODELS = ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'];
+function composeEngine({ bin, model, effort, flags }) {
+  const parts = [(bin || 'claude').trim()];
+  if (model) parts.push('--model', model.trim());
+  if (effort) parts.push('--effort', effort.trim());
+  if (flags && flags.trim()) parts.push(flags.trim());
+  return parts.join(' ');
+}
+function decomposeEngine(command) { // legacy migration only — pre-picker configs stored one string
+  const t = String(command || 'claude').trim().split(/\s+/).filter(Boolean);
+  const out = { bin: t.shift() || 'claude', model: '', effort: '', flags: '' };
+  const rest = [];
+  for (let i = 0; i < t.length; i++) {
+    const eq = t[i].match(/^--(model|effort)=(.+)$/);
+    if (eq) { out[eq[1]] = eq[2]; continue; }
+    if ((t[i] === '--model' || t[i] === '--effort') && t[i + 1] && !t[i + 1].startsWith('-')) {
+      out[t[i].slice(2)] = t[++i];
+      continue;
+    }
+    rest.push(t[i]);
+  }
+  if (out.model && !ENGINE_MODELS.includes(out.model)) { // unknown id: keep it, but as a flag
+    rest.unshift('--model', out.model);
+    out.model = '';
+  }
+  out.flags = rest.join(' ');
+  return out;
+}
+function engineFields() {
+  return { bin: $('#f-bin').value.trim() || 'claude', model: $('#f-model').value, effort: $('#f-effort').value, flags: $('#f-flags').value.trim() };
+}
+function renderEnginePreview() {
+  if ($('#f-preview')) $('#f-preview').textContent = composeEngine(engineFields());
+}
+
 async function loadSettings() {
   const c = await (await fetch('/api/config')).json();
   $('#f-repo').value = (c.repoPath && !c.repoPath.startsWith('/ABSOLUTE')) ? c.repoPath : '';
@@ -11,7 +47,19 @@ async function loadSettings() {
   $('#f-build').value = c.verifier?.build || '';
   $('#f-dev').value = c.dev?.command || '';
   $('#f-devurl').value = c.dev?.url || '';
-  $('#f-engine').value = c.agent?.command || 'claude';
+  const eng = c.agent?.bin !== undefined
+    ? { bin: c.agent.bin || 'claude', model: c.agent.model || '', effort: c.agent.effort || '', flags: c.agent.flags || '' }
+    : decomposeEngine(c.agent?.command); // older config: parse the one-string form once
+  $('#f-bin').value = eng.bin;
+  $('#f-model').value = ENGINE_MODELS.includes(eng.model) ? eng.model : '';
+  $('#f-effort').value = ['low', 'medium', 'high', 'max'].includes(eng.effort) ? eng.effort : '';
+  $('#f-flags').value = eng.flags;
+  renderEnginePreview();
+  const fx = $('#f-effort');
+  if (fx && state.status?.claude?.supportsEffort === false) {
+    fx.disabled = true;
+    fx.title = "your Claude CLI doesn't support --effort — update it to enable this";
+  }
   $('#f-turns').value = c.agent?.maxTurns || 30;
   if ($('#f-editor')) $('#f-editor').value = c.editor?.command || '';
   $('#f-pr').checked = !!c.openPR;
@@ -57,7 +105,7 @@ async function saveSettings() {
     openPR: $('#f-pr').checked,
     verifier: { typecheck: $('#f-tc').value.trim(), test: $('#f-test').value.trim(), lint: $('#f-lint').value.trim(), build: $('#f-build').value.trim() },
     dev: { command: $('#f-dev').value.trim(), url: $('#f-devurl').value.trim() },
-    agent: { command: $('#f-engine').value.trim() || 'claude', maxTurns: Number($('#f-turns').value) || 30 },
+    agent: { ...engineFields(), command: composeEngine(engineFields()), maxTurns: Number($('#f-turns').value) || 30 },
     editor: { command: $('#f-editor') ? $('#f-editor').value.trim() : '' },
   };
   const b = $('#save'); b.disabled = true; b.textContent = 'Saving…';
@@ -141,6 +189,11 @@ $('#f-browse')?.addEventListener('click', async () => {
     if (r.path) await switchRepo(r.path); // picking a folder = editing it: detect → save → rescan
   } finally { b.disabled = false; }
 });
+
+for (const id of ['f-bin', 'f-model', 'f-effort', 'f-flags']) {
+  const el = $('#' + id);
+  if (el) { el.addEventListener('input', renderEnginePreview); el.addEventListener('change', renderEnginePreview); }
+}
 
 $('#repo-find').addEventListener('click', async () => {
   const b = $('#repo-find');

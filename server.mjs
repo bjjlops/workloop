@@ -29,6 +29,8 @@ const DEFAULT_CFG = {
   verifier: { typecheck: 'npm run typecheck', test: 'npm test', lint: 'npm run lint', build: 'npm run build' },
   sources: { backlog: 'BACKLOG.md', todos: true, typeErrors: true, failingTests: true, lint: true, build: false },
   dev: { command: 'npm run dev', url: '' },
+  // note: the structured engine fields (bin/model/effort/flags) are deliberately
+  // NOT defaulted — their absence tells the UI to migrate a legacy one-string command
   agent: { command: 'claude', maxTurns: 30, allowedTools: 'Read,Edit,Bash', permissionMode: 'acceptEdits', stream: true },
   chat: { allowedTools: 'Read,Glob,Grep', maxTurns: 15, timeoutMs: 180000 },
   commands: [],

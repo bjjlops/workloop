@@ -93,8 +93,23 @@ export function claudeInfo(cfgCommand = 'claude', force = false) {
   try {
     const r = spawnSync(path, ['--version'], { encoding: 'utf8', env: childEnv(), timeout: 10000 });
     const version = ((r.stdout || r.stderr || '').trim().split('\n')[0] || null);
-    return { found: true, path, version, ok: r.status === 0 };
+    return { found: true, path, version, ok: r.status === 0, supportsEffort: supportsEffort(path, force) };
   } catch {
-    return { found: true, path, version: null, ok: false };
+    return { found: true, path, version: null, ok: false, supportsEffort: null };
   }
+}
+
+/** Does this CLI accept --effort? Unknown flags HARD-ERROR every run on older
+    builds, so the settings UI gates the effort picker on this (cached). */
+function supportsEffort(path, force = false) {
+  if (!force) {
+    const c = readCache();
+    if (typeof c.supportsEffort === 'boolean' && c.supportsEffortFor === path) return c.supportsEffort;
+  }
+  try {
+    const r = spawnSync(path, ['--help'], { encoding: 'utf8', env: childEnv(), timeout: 10000, maxBuffer: 1024 * 1024 });
+    const yes = /--effort\b/.test((r.stdout || '') + (r.stderr || ''));
+    saveCache({ supportsEffort: yes, supportsEffortFor: path });
+    return yes;
+  } catch { return null; } // unknown — UI treats null as "don't gate"
 }
