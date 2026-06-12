@@ -23,6 +23,18 @@
     if (state.batch || state.running) return; // board re-renders after the batch settles
     render(await (await fetch('/api/tasks')).json());
   });
+  // queued/discarded goals change the board WITHOUT a scan — refetch so the
+  // tasks panel and galaxy marks stay in step with the copilot and activity
+  // (debounced: the bus replays its ring on every reconnect)
+  let taskSync = null;
+  Bus.on('task.', () => {
+    if (state.batch || state.running) return;
+    clearTimeout(taskSync);
+    taskSync = setTimeout(async () => {
+      render(await (await fetch('/api/tasks')).json());
+      refreshRepo(); // queueing dirties the backlog file — keep the ±n chip honest
+    }, 150);
+  });
   Bus.on('git.', () => refreshRepo());
 
   const repoOk = state.status?.repo?.exists && state.status.repo.git;

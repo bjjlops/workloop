@@ -221,6 +221,18 @@ const Chat = (() => {
         badge.textContent = String(Number(badge.textContent || 0) + 1);
       }
     });
+    // a handoff closed anywhere (another tab, the same card here) settles the
+    // card everywhere — idempotent, so the tab that clicked is a no-op
+    const settleHandoff = (ev, glyph) => {
+      const el = document.getElementById('hf-' + (ev.data?.id || ''));
+      if (!el || el.classList.contains('resolved')) return;
+      el.classList.add('resolved');
+      const t = el.querySelector('.ht span');
+      if (t) t.textContent = glyph + ' ' + t.textContent.replace(/^[⚠✓—]\s*/, '');
+      el.querySelector('.hact')?.remove();
+    };
+    Bus.on('handoff.resolved', (ev) => settleHandoff(ev, '✓'));
+    Bus.on('handoff.dismissed', (ev) => settleHandoff(ev, '—'));
     // repo switch resets the session server-side — REFETCH, never clear:
     // the bus replays its event ring on reconnect, and a clear-on-replay
     // would eat real messages on every page load

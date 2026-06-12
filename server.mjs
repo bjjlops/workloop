@@ -506,22 +506,54 @@ const busSnapshot = () => ({
 // ---------- the AI side, connected ----------
 // queueGoals: append unchecked items to the repo's backlog file. Shared by
 // POST /api/backlog and the copilot's ```queue fences, so both paths dedupe
-// and format identically. Returns what actually landed.
+// and format identically. Returns what actually landed, with the 1-based
+// line each goal occupies (boardAddBacklog needs it to mint scanner ids).
 function queueGoals(cfg, titles) {
-  const file = join(cfg.repoPath, cfg.sources?.backlog || 'BACKLOG.md');
+  const rel = cfg.sources?.backlog || 'BACKLOG.md';
+  const file = join(cfg.repoPath, rel);
   let cur = existsSync(file) ? readFileSync(file, 'utf8') : '# Backlog\n\n';
+  if (!cur.endsWith('\n')) cur += '\n';
   const open = new Set(cur.split('\n').map((l) => l.match(/^\s*[-*]\s+\[ \]\s+(.*)$/)).filter(Boolean).map((m) => m[1].trim()));
   const queued = [], dup = [];
   for (const raw of titles) {
     const clean = String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 200);
     if (!clean) continue;
     if (open.has(clean)) { dup.push(clean); continue; }
-    cur += `${cur.endsWith('\n') ? '' : '\n'}- [ ] ${clean}\n`;
+    queued.push({ title: clean, line: cur.split('\n').length }); // the line it's about to land on
+    cur += `- [ ] ${clean}\n`;
     open.add(clean);
-    queued.push(clean);
   }
   if (queued.length) writeFileSync(file, cur);
-  return { queued, dup };
+  return { rel, queued, dup };
+}
+
+// boardAddBacklog: surgical task-board insert for freshly queued goals — the
+// exact shape and ids the scanner would produce, so the tasks panel, galaxy
+// marks, and the copilot's snapshot (all reading tasks.json) reflect a queued
+// goal immediately instead of after the next full verifier scan. Returns the
+// fresh state, or null when tasks.json belongs to a different repo (caller
+// falls back to a real scan).
+function boardAddBacklog(cfg, rel, queued) {
+  const state = readTasks();
+  if (state.meta?.repo !== cfg.repoPath) return null;
+  const sid = (...p) => createHash('sha1').update(p.join('|')).digest('hex').slice(0, 8);
+  state.tasks = state.tasks || [];
+  for (const q of queued) {
+    const tid = sid('backlog', String(q.line - 1), q.title); // scanner ids by 0-based line
+    if (state.tasks.some((t) => t.id === tid)) continue;
+    state.tasks.push({
+      id: tid, source: 'backlog', column: 'should-implement',
+      title: q.title, file: rel, line: q.line,
+      detail: `From ${rel}`, verifiable: false, verifyCmd: null,
+    });
+  }
+  state.meta.counts = {
+    needsWork: state.tasks.filter((t) => t.column === 'needs-work').length,
+    shouldImplement: state.tasks.filter((t) => t.column === 'should-implement').length,
+  };
+  state.meta.generatedAt = new Date().toISOString(); // bump so the client's render dedup re-renders
+  writeFileSync(tasksPath, JSON.stringify(state, null, 2));
+  return state;
 }
 
 // chatContext: one compact snapshot, regenerated per turn, of everything the
@@ -547,10 +579,13 @@ function chatContext(cfg) {
   const open = Handoffs.list().filter((h) => h.status === 'open');
   const acts = busRecent(15).filter((e) => !e.kind.startsWith('chat.'))
     .map((e) => `  - ${ago(e.ts)} · ${e.kind} · ${cap(e.message)}`);
+  const genAt = Date.parse(t.meta?.generatedAt || '') || 0;
   return [
     'WORKSPACE STATE (live, regenerated for this turn — supersedes anything earlier in the conversation):',
     `repo: ${cfg.repoPath} · branch: ${g.branch || '?'} · ${g.dirty ? 'uncommitted changes' : 'clean tree'}`,
     `agent run: ${currentRun ? `ACTIVE — "${currentRun.title}"${currentRun.file ? ` (${currentRun.file})` : ''}` : 'none active'}`,
+    `dev server: ${devRunning() ? 'running' + (dev.url ? ` — ${dev.url}` : '') : 'not running'}`,
+    `task board: ${genAt ? `updated ${ago(genAt)}` : 'not scanned yet'}`,
     sect('needs work', nw.slice(0, 8).map(item), counts.needsWork),
     sect('queue', qd.slice(0, 8).map(item), counts.shouldImplement),
     sect('open handoffs', open.slice(0, 6).map((h) => `  - [${h.source}] ${cap(h.title)}`), open.length),
@@ -576,18 +611,27 @@ const server = createServer(async (req, res) => {
     if (Chat.hasWriteTools(cfg.chat?.allowedTools) && (activeRuns > 0 || Commands.running()))
       return json(res, 409, { error: 'chat has write tools configured — wait for the active run/command to finish' });
     // ```queue fences land here: same rules as POST /api/backlog — never
-    // dirty the tree mid-run; boards everywhere refresh via scan.done
+    // dirty the tree mid-run; the surgical board insert keeps every panel
+    // (tasks, galaxy marks, the next turn's snapshot) in step via task.queued
     const onGoals = (titles) => {
       if (activeRuns > 0) return { queued: [], blocked: true };
-      const { queued } = queueGoals(readCfg(), titles);
-      for (const t of queued) publish('task.queued', `goal queued by copilot — ${t}`);
-      if (queued.length) runScannerAsync('copilot queued goals');
-      return { queued, blocked: false };
+      const live = readCfg();
+      const { rel, queued } = queueGoals(live, titles);
+      const board = queued.length ? boardAddBacklog(live, rel, queued) : true;
+      for (const q of queued) publish('task.queued', `goal queued by copilot — ${q.title}`);
+      if (queued.length && !board) runScannerAsync('copilot queued goals'); // board was for another repo
+      return { queued: queued.map((q) => q.title), blocked: false };
     };
     return Chat.send(req, res, { text: clean, cfg, context: chatContext(cfg), onGoals });
   }
   if (req.method === 'GET' && url.pathname === '/api/chat/history') return json(res, 200, Chat.history());
-  if (req.method === 'POST' && url.pathname === '/api/chat/reset') return json(res, 200, Chat.reset());
+  if (req.method === 'POST' && url.pathname === '/api/chat/reset') {
+    const r = Chat.reset();
+    // same event the repo-switch path emits — other tabs refetch history and
+    // the activity log records the reset instead of silently losing the thread
+    publish('chat.reset', 'chat reset — new conversation');
+    return json(res, 200, r);
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/handoffs') return json(res, 200, { handoffs: Handoffs.list() });
   if (req.method === 'POST' && (url.pathname === '/api/handoffs/resolve' || url.pathname === '/api/handoffs/dismiss')) {
@@ -765,10 +809,13 @@ const server = createServer(async (req, res) => {
     if (!clean) return json(res, 400, { error: 'empty goal' });
     const cfg = readCfg();
     if (!cfg.repoPath || !existsSync(cfg.repoPath)) return json(res, 400, { error: 'repoPath not set' });
-    const { queued } = queueGoals(cfg, [clean]);
+    const { rel, queued } = queueGoals(cfg, [clean]);
     if (!queued.length) return json(res, 400, { error: 'already queued — that goal is on the board' });
-    publish('task.queued', `goal queued — ${queued[0]}`);
-    const scanLog = await runScannerAsync();
+    // surgical board insert — queueing shouldn't cost a verifier re-scan
+    const board = boardAddBacklog(cfg, rel, queued);
+    publish('task.queued', `goal queued — ${queued[0].title}`);
+    if (board) return json(res, 200, board);
+    const scanLog = await runScannerAsync('queued goal'); // tasks.json was for another repo
     return json(res, 200, { ...readTasks(), scanLog });
   }
 

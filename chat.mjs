@@ -49,7 +49,7 @@ function preamble(tools) {
     + (ro
       ? `Your tool access is read-only (${tools}) — you cannot edit files or run commands; the dashboard's Run buttons do that.`
       : `Your tools: ${tools}.`)
-    + ' A live WORKSPACE STATE snapshot (task board, queue, agent run, recent activity, open handoffs, git) is appended to these instructions and regenerated every turn — trust it over anything older in the conversation when answering questions about tasks, runs, activity, or handoffs.'
+    + ' A live WORKSPACE STATE snapshot (task board, queue, agent run, dev server, recent activity, open handoffs, git) is appended to these instructions and regenerated every turn — trust it over anything older in the conversation when answering questions about tasks, runs, activity, or handoffs.'
     + ' When the user must do something you cannot reach — steps in external dashboards (Cloudflare, Vercel, Supabase, App Store Connect, DNS registrars), secrets or API keys, sign-ins, purchases, physical devices — emit a fenced code block whose info string is exactly handoff: first line a short imperative title, following lines numbered steps, each runnable command wrapped in backticks.'
     + ' When the user asks you to queue, add, or track work for later (or accepts your offer to queue it), emit a fenced code block whose info string is exactly queue: one goal per line, short and imperative — Workloop appends each to the backlog and it appears under Queue on the task board.';
 }
