@@ -25,6 +25,7 @@ const cfgPath = join(__dirname, 'workloop.config.json');
 const DEFAULT_CFG = {
   repoPath: '/ABSOLUTE/PATH/TO/your/repo',
   recentRepos: [], // MRU, server-maintained — newest first, max 8
+  repoSettings: {}, // per-repo {verifier, dev} memory, server-maintained on switches
   branchPrefix: 'workloop',
   openPR: false,
   verifier: { typecheck: 'npm run typecheck', test: 'npm test', lint: 'npm run lint', build: 'npm run build' },
@@ -593,7 +594,8 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/config') {
     const patch = await readBody(req);
     if (typeof patch.repoPath === 'string') patch.repoPath = patch.repoPath.trim();
-    delete patch.recentRepos; // server-owned — only real repo switches write it
+    delete patch.recentRepos;  // server-owned — only real repo switches write it
+    delete patch.repoSettings; // server-owned — per-repo memory below
     const prev = readCfg();
     const switching = typeof patch.repoPath === 'string' && patch.repoPath
       && !patch.repoPath.startsWith('/ABSOLUTE') && patch.repoPath !== prev.repoPath;
@@ -605,6 +607,19 @@ const server = createServer(async (req, res) => {
       const keep = (p) => typeof p === 'string' && p && !p.startsWith('/ABSOLUTE') && existsSync(p);
       next.recentRepos = [patch.repoPath, prev.repoPath, ...(prev.recentRepos || [])]
         .filter((p, i, a) => keep(p) && a.indexOf(p) === i).slice(0, 8);
+      // per-repo memory: stash the repo we're LEAVING (hand-tuned commands and
+      // all), and if we've been to the new repo before, its remembered commands
+      // beat whatever re-detection just proposed. Twice-bitten: detect kept
+      // clobbering a tuned `expo start --offline` with plain `npm start`.
+      next.repoSettings = { ...(prev.repoSettings || {}) };
+      if (keep(prev.repoPath)) next.repoSettings[prev.repoPath] = { verifier: prev.verifier, dev: prev.dev };
+      const back = next.repoSettings[patch.repoPath];
+      if (back) {
+        next.verifier = { ...next.verifier, ...back.verifier };
+        next.dev = { ...next.dev, ...back.dev };
+      }
+      const keepSet = new Set([patch.repoPath, ...next.recentRepos]);
+      for (const k of Object.keys(next.repoSettings)) if (!keepSet.has(k)) delete next.repoSettings[k];
       if (devRunning()) stopDev(); // the running app belongs to the OLD repo
       Chat.reset();                // the --resume session is per-cwd and about the OLD repo
       publish('chat.reset', 'chat reset — repo changed');

@@ -173,6 +173,7 @@ async function switchRepo(path) {
     const d = await runDetect(); // refills verifier/dev for the NEW repo
     if (d && d.exists === false) { note('that folder no longer exists'); return; }
     await saveSettings();
+    await loadSettings(); // the server restores remembered per-repo commands over re-detection
   } finally {
     repoSwitching = false;
     $('#repo-list').classList.remove('busy');
