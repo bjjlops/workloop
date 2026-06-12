@@ -1,0 +1,160 @@
+/* galaxy.css — the repo map stage: shell, tooltip, ticker, legend, toolbar. */
+
+/* floating tool cluster, bottom-right of the visible stage (clears the drawer) */
+.viz-hud {
+  position: absolute; right: calc(var(--inset-r, 0px) + 14px); bottom: 12px; z-index: 5;
+  transition: right var(--t-med) var(--ease);
+  display: flex; align-items: center; gap: 6px;
+  background: var(--glass-soft); border: 1px solid var(--line-hi); border-radius: 999px;
+  padding: 5px 8px;
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+.viz-hud .n { font-family: var(--mono); color: var(--faint); font-size: 11px; padding: 0 6px; white-space: nowrap }
+.viztool {
+  background: none; border: 1px solid var(--line); color: var(--muted); font-size: 11px;
+  font-family: var(--mono); padding: 4px 12px; border-radius: 999px; text-transform: none; letter-spacing: 0;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.viztool:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); color: var(--accent-bright); box-shadow: 0 0 10px -4px var(--glow-accent) }
+.viztool.on { border-color: color-mix(in srgb, var(--warn) 60%, transparent); color: var(--warn); box-shadow: 0 0 10px -4px var(--glow-warn) }
+.viz-shell {
+  position: absolute; inset: 0;
+  overflow: hidden; background: var(--viz-bg);
+  cursor: grab; user-select: none; -webkit-user-select: none; touch-action: none;
+}
+.viz-shell.dragging { cursor: grabbing }
+.viz-shell canvas { position: absolute; inset: 0; width: 100%; height: 100% }
+.viz-shell::before { /* themed atmosphere + vignette, above the canvases, below the chrome */
+  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: var(--viz-atmo, none);
+  box-shadow: inset 0 0 24vmax -8vmax var(--viz-vig, transparent);
+}
+html[data-fx="0"] .viz-shell::before { background: none; box-shadow: none }
+.viz-shell::after { /* run-active flowing border */
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px;
+  background: linear-gradient(120deg,
+    color-mix(in srgb, var(--warn) 80%, transparent),
+    color-mix(in srgb, var(--accent) 80%, transparent),
+    color-mix(in srgb, var(--warn) 80%, transparent));
+  background-size: 300% 300%;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none; z-index: 4; opacity: 0; transition: opacity var(--t-med) var(--ease);
+}
+body.run-active .viz-shell::after { opacity: 1; animation: ring-flow 7s linear infinite }
+@keyframes ring-flow { to { background-position: 300% 50% } }
+#viz-fx { pointer-events: none }
+.viz-tip {
+  position: absolute; pointer-events: none; background: var(--glass); border: 1px solid var(--line);
+  border-radius: 7px; padding: 7px 10px; font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+  color: var(--text); max-width: 360px; z-index: 3; word-break: break-all;
+}
+.viz-tip .dim { color: var(--faint) }
+.viz-ticker {
+  position: absolute; left: calc(var(--inset-l, 0px) + 12px); bottom: 12px;
+  display: flex; flex-direction: column-reverse; gap: 3px;
+  font-family: var(--mono); font-size: 11px; pointer-events: none; z-index: 2;
+  transition: left var(--t-med) var(--ease);
+}
+.viz-ticker .tk {
+  color: var(--warn); background: var(--glass-soft); border-radius: 5px; padding: 2px 8px;
+  transition: opacity .7s; max-width: 440px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.viz-ticker .tk.out { opacity: 0 }
+.viz-legend {
+  position: absolute; right: calc(var(--inset-r, 0px) + 10px); top: 10px;
+  transition: right var(--t-med) var(--ease);
+  background: var(--glass); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 11px; color: var(--muted);
+  z-index: 3; max-height: 85%; overflow: auto;
+}
+.viz-legend .lg { display: flex; align-items: center; gap: 7px; margin: 3px 0 }
+.viz-legend .sw { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0 }
+.viz-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: var(--faint); font-size: 13px; text-align: center; padding: 20px; z-index: 2;
+}
+
+/* node menu (peek / history / open / reveal / copy / pin / focus / goal / chat) */
+.viz-pop {
+  position: absolute; z-index: 6; background: var(--glass); border: 1px solid var(--line);
+  border-radius: 9px; padding: 8px 10px; max-width: 380px;
+}
+.viz-pop.wide { max-width: min(640px, 76vw) }
+.viz-pop .pp { font-family: var(--mono); font-size: 11px; color: var(--text); word-break: break-all; margin-bottom: 2px }
+.viz-pop .pmeta { font-family: var(--mono); font-size: 10.5px; color: var(--faint); margin-bottom: 6px }
+.viz-pop .pa { display: flex; gap: 4px; flex-wrap: wrap; align-items: center }
+.viz-pop .psec { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 6px }
+.viz-pop .peek pre {
+  margin: 6px 0 0; max-height: 60vh; overflow: auto; white-space: pre;
+  font-family: var(--mono); font-size: 11px; line-height: 1.55; color: var(--muted);
+  background: color-mix(in srgb, var(--bg0) 70%, transparent);
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+}
+.viz-pop .peek .pmeta { margin: 5px 0 0 }
+
+/* focused-subtree chip (sits beside the extension chips) */
+.focuschip { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent) }
+
+/* unpin button inside the search dropdown's pinned rows */
+.search-drop .srx { margin-left: auto; background: none; border: none; color: var(--faint); font-size: 10px; padding: 0 2px; cursor: pointer }
+.search-drop .srx:hover { color: var(--viz-deleted, #e0614b) }
+
+/* hovered-path breadcrumb */
+.hud-crumb {
+  position: absolute; left: calc(var(--inset-l, 0px) + 12px); top: 10px; z-index: 5;
+  display: flex; align-items: center; gap: 2px; max-width: min(70vw, 700px); overflow: hidden;
+  background: var(--glass-soft); border: 1px solid var(--line-hi); border-radius: 999px;
+  padding: 3px 10px; font-family: var(--mono); font-size: 11px;
+  transition: left var(--t-med) var(--ease);
+}
+.hud-crumb .cseg {
+  background: none; border: none; color: var(--muted); font-family: var(--mono); font-size: 11px;
+  padding: 0 1px; border-radius: 4px; white-space: nowrap;
+}
+.hud-crumb .cseg:hover { color: var(--accent-bright) }
+.hud-crumb .cseg.last { color: var(--text) }
+.hud-crumb .csep { color: var(--faint) }
+
+@media (max-width: 760px) { .viz-hud .n { display: none } }
+
+/* ================= 3D galaxy (Repo3D) ================= */
+#repoviz3d { position: absolute; inset: 0 }
+body:not([data-viz="3d"]) #repoviz3d { display: none }
+body[data-viz="3d"] #repoviz { display: none }
+#viz3d-labels { pointer-events: none }
+
+/* 2D ⇄ 3D view switch, in the HUD */
+.viewseg {
+  display: flex; margin-left: 6px;
+  border: 1px solid var(--line); border-radius: 999px; overflow: hidden;
+}
+.viewseg button {
+  background: none; border: none; cursor: pointer;
+  color: var(--muted); font-family: var(--mono); font-size: 11px;
+  padding: 4px 13px; letter-spacing: .04em;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.viewseg button + button { border-left: 1px solid var(--line) }
+.viewseg button:hover { color: var(--accent-bright) }
+.viewseg button.on {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-bright);
+}
+
+/* 3D layout switcher in the drawer */
+.layseg { display: flex; gap: 4px }
+.layseg button {
+  flex: 1; background: none; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 7px;
+  color: var(--muted); font-family: var(--mono); font-size: 11px; padding: 5px 0;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.layseg button:hover { color: var(--accent-bright); border-color: color-mix(in srgb, var(--accent) 40%, transparent) }
+.layseg button.on {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--accent-bright);
+  box-shadow: 0 0 10px -4px var(--glow-accent);
+}

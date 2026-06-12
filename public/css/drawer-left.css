@@ -1,0 +1,150 @@
+/* drawer-left.css — the control center: accordion sections, settings fields,
+   branches, saved commands, theme picker. */
+
+.dl-scroll { flex: 1; min-width: 0; overflow-y: auto; padding: 14px 16px 24px; scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent }
+.dl-title {
+  margin: 2px 0 12px; font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600; font-family: var(--mono);
+  position: relative; padding-bottom: 9px;
+}
+.dl-title::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 45%, transparent), var(--line) 50%, transparent 90%);
+}
+
+.dlsec { border: 1px solid var(--line); border-radius: 11px; margin-bottom: 9px; background: color-mix(in srgb, var(--bg1) 55%, transparent); overflow: hidden }
+.dlsec summary {
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px;
+  padding: 10px 13px; font-size: 13px; font-weight: 600; color: var(--text);
+  transition: color var(--t-fast) var(--ease);
+}
+.dlsec summary::-webkit-details-marker { display: none }
+.dlsec summary::before { content: "▸"; font-size: 10px; color: var(--faint); transition: transform var(--t-fast) var(--ease) }
+.dlsec[open] summary::before { transform: rotate(90deg) }
+.dlsec summary:hover { color: var(--accent-bright) }
+.dlbody { padding: 4px 13px 14px; display: flex; flex-direction: column; gap: 10px }
+
+.sumchip { /* current repo, shown in the section header even when folded */
+  margin-left: auto; font-family: var(--mono); font-size: 10.5px; font-weight: 400;
+  color: var(--faint); max-width: 55%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; direction: rtl; text-align: left; /* ellipsis eats the front — the repo NAME stays visible */
+}
+.sumchip:empty { display: none }
+.notes { font-family: var(--mono); font-size: 11px; color: var(--faint) }
+.notes:empty { display: none }
+
+.kv { display: flex; align-items: center; gap: 8px; font-size: 12px; flex-wrap: wrap }
+.kv .k { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); flex: none }
+.kv .v { font-family: var(--mono); font-size: 11.5px; color: var(--muted); word-break: break-all }
+
+.field { display: flex; flex-direction: column; gap: 5px }
+.field label { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint) }
+.field input[type=text], .field input[type=number], .inline input[type=text] {
+  background: var(--bg0); border: 1px solid var(--line);
+  border-radius: 7px; color: var(--text); padding: 8px 10px; font-family: var(--mono); font-size: 12.5px;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+  min-width: 0;
+}
+.field input:focus, .inline input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), 0 0 18px -6px var(--glow-accent);
+}
+.field input::placeholder, .inline input::placeholder { color: var(--faint) }
+.field .hint, .hint { font-size: 11px; color: var(--faint) }
+.inline { display: flex; gap: 8px; align-items: center }
+.inline input { flex: 1 }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap }
+.check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted) }
+.detectmsg { font-family: var(--mono); font-size: 11.5px; color: var(--accent); min-height: 14px }
+.detectmsg:empty { display: none }
+.subh2 { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin-top: 6px; border-bottom: 1px solid var(--line); padding-bottom: 5px }
+
+/* repo picker */
+.repolist { display: flex; flex-direction: column }
+.repolist:empty { display: none }
+.repolist.busy { opacity: .55; pointer-events: none }
+.reporow {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: none; border: 0; border-bottom: 1px dashed var(--line);
+  padding: 6px 4px; border-radius: 6px; cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+.reporow:hover { background: color-mix(in srgb, var(--accent) 7%, transparent) }
+.reporow .rname { font-size: 12.5px; font-weight: 600; color: var(--text); flex: none; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.reporow .rpath { font-family: var(--mono); font-size: 11px; color: var(--faint); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.reporow .rtag {
+  flex: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px; padding: 1px 7px;
+}
+.reporow.on { cursor: default }
+.reporow.on:hover { background: none }
+
+/* saved commands */
+.cmdrow { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--line) }
+.cmdrow .cname { font-size: 12.5px; color: var(--text); flex: none; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.cmdrow .ccmd { font-family: var(--mono); font-size: 11px; color: var(--faint); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.cmdrow .linkbtn { flex: none; padding: 2px 6px }
+
+/* theme picker */
+#theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: 8px }
+.theme-card {
+  cursor: pointer; border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  background: var(--bg0); padding: 0; text-align: left;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.theme-card:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--accent) 45%, transparent) }
+.theme-card[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 14px -4px var(--glow-accent) }
+.theme-card .tc-prev { height: 48px; position: relative; overflow: hidden; display: block; background: var(--page-bg); border-bottom: 1px solid var(--line) }
+.theme-card .tc-prev .tc-neb { /* each card previews its own nebula — the cascade does the work */
+  position: absolute; inset: -20%; display: block;
+  background:
+    radial-gradient(50% 70% at 22% 75%, color-mix(in srgb, var(--viz-neb-1) 45%, transparent), transparent 70%),
+    radial-gradient(45% 65% at 72% 30%, color-mix(in srgb, var(--viz-neb-2) 38%, transparent), transparent 70%),
+    radial-gradient(40% 55% at 55% 85%, color-mix(in srgb, var(--viz-neb-3) 40%, transparent), transparent 70%);
+  opacity: calc(var(--viz-neb-alpha) * 3.2);
+  filter: saturate(1.2);
+}
+.theme-card .tc-prev .tc-stars {
+  position: absolute; inset: 0; display: block;
+  background-image:
+    radial-gradient(color-mix(in srgb, var(--viz-star-1) 80%, transparent) 1px, transparent 1.4px),
+    radial-gradient(color-mix(in srgb, var(--viz-star-2) 60%, transparent) .8px, transparent 1.2px);
+  background-size: 26px 22px, 17px 15px;
+  background-position: 3px 5px, 9px 11px;
+  opacity: calc(min(1, var(--viz-star-density)) * .8);
+}
+.theme-card .tc-prev .tc-aurora { position: absolute; top: 0; left: 0; right: 0; height: 2px; display: block; background: var(--aurora-gradient) }
+.theme-card .tc-prev .tc-dots { position: absolute; left: 7px; bottom: 6px; display: flex; gap: 4px }
+.theme-card .tc-prev .tc-dots i { width: 7px; height: 7px; border-radius: 50%; box-shadow: 0 0 6px -1px currentColor }
+.theme-card .tc-prev .tc-dots i:nth-child(1) { background: var(--accent); color: var(--accent) }
+.theme-card .tc-prev .tc-dots i:nth-child(2) { background: var(--accent-2); color: var(--accent-2) }
+.theme-card .tc-prev .tc-dots i:nth-child(3) { background: var(--ok); color: var(--ok) }
+.theme-card .tc-prev .tc-dots i:nth-child(4) { background: var(--warn); color: var(--warn) }
+.theme-card .tc-name { display: block; font-size: 10.5px; font-family: var(--mono); color: var(--muted); padding: 5px 8px; background: var(--bg1) }
+
+/* graphics quality dial */
+.qrow { display: flex; align-items: center; gap: 10px }
+.qrow .qname { font-family: var(--mono); font-size: 11px; color: var(--accent); min-width: 64px; text-align: right }
+#f-quality { flex: 1; -webkit-appearance: none; appearance: none; height: 4px; border-radius: 999px; background: linear-gradient(90deg, var(--faint), var(--accent)); outline-offset: 6px }
+#f-quality::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg0);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 12px -2px var(--glow-accent); cursor: pointer;
+}
+#f-quality::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg0);
+  box-shadow: 0 0 0 1px var(--accent), 0 0 12px -2px var(--glow-accent); cursor: pointer;
+}
+
+/* about */
+.about { font-size: 12px; color: var(--muted); line-height: 1.7 }
+.about p { margin: 6px 0 }
+.about code { font-family: var(--mono); background: color-mix(in srgb, var(--bg0) 70%, transparent); border-radius: 4px; padding: 0 5px }
+.legend { display: flex; gap: 8px; flex-wrap: wrap }
+.legend span {
+  display: inline-flex; align-items: center; gap: 6px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px; font-size: 11px;
+  background: rgba(255, 255, 255, .02);
+}
+.swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block }

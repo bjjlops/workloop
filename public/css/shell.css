@@ -1,0 +1,205 @@
+/* shell.css — the app frame: ambient layers, HUD bar, full-screen stage,
+   the two drawers' chrome (slide/resize/scrim), toasts, shared controls. */
+
+:root { --hud-h: 48px; --drawer-r-w: clamp(340px, 30vw, 520px); --drawer-l-w: clamp(320px, 26vw, 440px); }
+
+html, body { height: 100%; overflow: hidden }
+
+/* ambient layers sit under everything */
+#fx-l1, #fx-l2 { position: fixed; inset: 0; z-index: 0; pointer-events: none }
+#ambient { position: fixed; inset: 0; z-index: 0; pointer-events: none; width: 100%; height: 100% }
+
+/* ---------- HUD ---------- */
+#hud {
+  position: fixed; top: 0; left: 0; right: 0; height: var(--hud-h); z-index: 50;
+  display: flex; align-items: center; gap: 10px; padding: 0 10px;
+  background: linear-gradient(180deg, var(--glass-hi), var(--glass-lo));
+  -webkit-backdrop-filter: blur(10px) saturate(1.2); backdrop-filter: blur(10px) saturate(1.2);
+  border-bottom: 1px solid var(--line-hi);
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+}
+.mark {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .34em; font-weight: 700;
+  background: linear-gradient(90deg, var(--accent), var(--accent-ice));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--accent) 30%, transparent));
+}
+.hud-spacer { flex: 1 }
+.hud-toggle {
+  position: relative; background: none; border: 1px solid transparent; color: var(--muted);
+  font-size: 15px; line-height: 1; padding: 6px 9px; border-radius: 8px;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.hud-toggle:hover { color: var(--accent-bright); border-color: color-mix(in srgb, var(--accent) 40%, transparent); box-shadow: 0 0 10px -4px var(--glow-accent) }
+.hud-toggle[aria-expanded="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent) }
+.hud-badge {
+  position: absolute; top: 1px; right: 1px; min-width: 14px; height: 14px; border-radius: 999px;
+  background: var(--warn); color: var(--bg0); font-size: 9px; line-height: 14px; padding: 0 3px; font-weight: 700;
+}
+.hud-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 240px; overflow: hidden;
+  background: none; border: 1px solid var(--line); color: var(--muted);
+  font-family: var(--mono); font-size: 11.5px; padding: 4px 11px; border-radius: 999px; white-space: nowrap;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.hud-chip:hover { color: var(--accent-bright); border-color: color-mix(in srgb, var(--accent) 45%, transparent); box-shadow: 0 0 10px -4px var(--glow-accent) }
+.hud-chip #hud-branch-name { overflow: hidden; text-overflow: ellipsis }
+#hud .counts { display: flex; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--muted) }
+#hud .counts .stat {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: linear-gradient(180deg, rgba(255, 255, 255, .03), transparent);
+}
+#hud .counts em { font-style: normal; font-size: 12px; color: var(--accent-bright); text-shadow: 0 0 8px var(--glow-accent) }
+#hud #rescan { white-space: nowrap }
+#hud .workchip { margin-left: 2px }
+
+/* sign-in — only shown when not connected to the Claude CLI; made obvious */
+.hud-signin {
+  white-space: nowrap; color: var(--bg0); font-family: var(--mono); font-size: 11.5px; font-weight: 700;
+  border: 1px solid var(--accent); border-radius: 999px; padding: 4px 13px;
+  background: linear-gradient(180deg, var(--accent-bright), var(--accent));
+  box-shadow: 0 0 0 0 var(--glow-accent);
+  animation: signin-pulse 2.2s var(--ease) infinite;
+  transition: filter var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.hud-signin:hover { filter: brightness(1.12); transform: translateY(-1px) }
+.hud-signin[disabled] { opacity: .6; animation: none }
+@keyframes signin-pulse {
+  0% { box-shadow: 0 0 0 0 var(--glow-accent) }
+  70% { box-shadow: 0 0 0 7px transparent }
+  100% { box-shadow: 0 0 0 0 transparent }
+}
+
+/* galaxy search */
+.hud-search { position: relative; margin-left: 4px }
+#searchbox {
+  width: clamp(140px, 16vw, 240px); background: var(--select-bg); border: 1px solid var(--line);
+  border-radius: 999px; color: var(--text); font-family: var(--mono); font-size: 11.5px;
+  padding: 4px 12px; -webkit-appearance: none; appearance: none;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease), width var(--t-med) var(--ease);
+}
+#searchbox:focus {
+  outline: none; border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+  width: clamp(200px, 24vw, 340px);
+}
+#searchbox::placeholder { color: var(--faint) }
+.search-drop {
+  position: absolute; top: calc(100% + 6px); left: 0; min-width: 280px; max-width: 420px; z-index: 80;
+  background: var(--glass); border: 1px solid var(--line-hi); border-radius: 10px; overflow: hidden;
+  box-shadow: 0 14px 40px -12px rgba(0, 0, 0, .6);
+}
+.search-drop .sr { display: flex; gap: 8px; align-items: baseline; padding: 6px 11px; cursor: pointer; font-family: var(--mono) }
+.search-drop .sr.on, .search-drop .sr:hover { background: color-mix(in srgb, var(--accent) 12%, transparent) }
+.search-drop .srb { font-size: 12px; color: var(--text); white-space: nowrap }
+.search-drop .srd { font-size: 10px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+
+/* extension filter chips */
+.extchips { display: flex; gap: 4px; margin-left: 4px }
+.extchip {
+  background: none; border: 1px solid var(--line); color: var(--faint); font-family: var(--mono);
+  font-size: 10px; padding: 2px 8px; border-radius: 999px;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.extchip.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent) }
+.extchip:hover { color: var(--accent-bright) }
+
+.dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--faint);
+  vertical-align: middle; flex: none;
+}
+.dot.ok { background: var(--ok); color: var(--ok); animation: dot-pulse 2.4s var(--ease) infinite }
+.dot.bad { background: var(--danger); color: var(--danger); box-shadow: 0 0 8px 2px var(--glow-danger); animation: dot-pulse 1.2s var(--ease) infinite }
+.dot.warn { background: var(--warn); box-shadow: 0 0 7px 1px var(--glow-warn) }
+@keyframes dot-pulse { 0% { box-shadow: 0 0 0 0 currentColor } 70% { box-shadow: 0 0 0 6px transparent } 100% { box-shadow: 0 0 0 0 transparent } }
+
+.workchip {
+  display: none; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px;
+  letter-spacing: .08em; color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, transparent); border-radius: 999px; padding: 2px 9px;
+}
+.workchip .wdot { width: 5px; height: 5px; border-radius: 50%; background: var(--warn); color: var(--warn); animation: dot-pulse 1.4s var(--ease) infinite }
+body.run-active .workchip { display: inline-flex }
+
+/* ---------- stage ---------- */
+#stage { position: fixed; inset: var(--hud-h) 0 0 0; z-index: 1 }
+#repoviz { position: absolute; inset: 0 }
+
+/* ---------- shared buttons ---------- */
+.btn {
+  background: linear-gradient(180deg, var(--bg2), var(--bg1)); color: var(--text);
+  border: 1px solid var(--line); padding: 8px 15px; border-radius: 9px; font-size: 13px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+  transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent-bright); transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent), 0 6px 18px -8px var(--glow-accent);
+}
+.btn[disabled] { opacity: .5; cursor: default; transform: none }
+.btn.primary {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent); color: var(--accent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 12%, transparent), color-mix(in srgb, var(--accent) 4%, transparent));
+}
+.linkbtn {
+  background: none; border: none; color: var(--accent); font-family: var(--mono); font-size: 12px;
+  padding: 3px 7px; border-radius: 6px;
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.linkbtn:hover {
+  color: var(--accent-bright); background: color-mix(in srgb, var(--accent) 8%, transparent); text-decoration: none;
+  text-shadow: 0 0 8px var(--glow-accent);
+}
+.linkbtn[disabled] { opacity: .5; cursor: default }
+
+.branchsel {
+  -webkit-appearance: none; appearance: none; background-color: var(--select-bg);
+  border: 1px solid var(--line); color: var(--text);
+  font-family: var(--mono); font-size: 12px; border-radius: 7px; padding: 4px 24px 4px 9px; max-width: 100%; cursor: pointer;
+  background-image: var(--select-arrow);
+  background-repeat: no-repeat; background-position: right 8px center;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.branchsel:hover, .branchsel:focus {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* ---------- drawers ---------- */
+.drawer {
+  position: fixed; top: var(--hud-h); bottom: 0; z-index: 60;
+  background: linear-gradient(180deg, var(--panel-hi), var(--panel-lo));
+  -webkit-backdrop-filter: blur(14px) saturate(1.15); backdrop-filter: blur(14px) saturate(1.15);
+  transition: transform var(--t-med) var(--ease);
+  display: flex;
+}
+body.no-anim .drawer { transition: none }
+.drawer-r { right: 0; width: var(--drawer-r-w); border-left: 1px solid var(--line-hi); transform: translateX(100%) }
+.drawer-l { left: 0; width: var(--drawer-l-w); border-right: 1px solid var(--line-hi); transform: translateX(-100%); flex-direction: row-reverse }
+body.drawer-r-open .drawer-r { transform: none }
+body.drawer-l-open .drawer-l { transform: none }
+.grip {
+  width: 6px; flex: none; cursor: col-resize; position: relative; z-index: 2;
+  transition: background var(--t-fast) var(--ease);
+}
+.grip:hover, .grip.dragging { background: color-mix(in srgb, var(--accent) 25%, transparent) }
+
+/* scrim — narrow screens only */
+#scrim { position: fixed; inset: var(--hud-h) 0 0 0; z-index: 55; background: rgba(0, 0, 0, .45) }
+
+/* ---------- toast ---------- */
+#toast {
+  position: fixed; top: calc(var(--hud-h) + 12px); left: 50%; transform: translateX(-50%); z-index: 90;
+  background: var(--glass); border: 1px solid var(--line-hi); border-radius: 9px;
+  color: var(--text); font-family: var(--mono); font-size: 12px; padding: 8px 16px; max-width: 70vw;
+  box-shadow: 0 8px 30px -10px rgba(0, 0, 0, .7);
+}
+
+/* ---------- narrow fallback ---------- */
+@media (max-width: 760px) {
+  .drawer-r, .drawer-l { width: 100vw }
+  .grip { display: none }
+  #hud { gap: 5px; padding: 0 8px }
+  #hud .counts, .hud-chip#hud-engine, #hud #rescan, .extchips, .hud-search, .workchip { display: none }
+}

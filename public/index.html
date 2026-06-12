@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Workloop</title>
+<script>/* theme + graphics quality before first paint — no flash of the wrong look */
+document.documentElement.dataset.theme = localStorage.getItem('wl.theme') || 'mission-control';
+document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2';</script>
+<link rel="stylesheet" href="/css/tokens.css" />
+<link rel="stylesheet" href="/css/themes.css" />
+<link rel="stylesheet" href="/css/themes-new.css" />
+<link rel="stylesheet" href="/css/base.css" />
+<link rel="stylesheet" href="/css/shell.css" />
+<link rel="stylesheet" href="/css/galaxy.css" />
+<link rel="stylesheet" href="/css/drawer-right.css" />
+<link rel="stylesheet" href="/css/drawer-left.css" />
+</head>
+<body>
+
+<!-- ambient theme layers: CSS-only effects on the divs, JS particles on the canvas -->
+<div id="fx-l1" aria-hidden="true"></div>
+<div id="fx-l2" aria-hidden="true"></div>
+<canvas id="ambient" aria-hidden="true"></canvas>
+
+<header id="hud">
+  <button class="hud-toggle" id="toggle-left" aria-controls="drawer-left" aria-expanded="false" title="Control center  [">☰</button>
+  <span class="mark">WORKLOOP</span>
+  <button class="hud-chip" id="hud-branch" title="Branches — open control center">
+    <span class="dot" id="d-repo"></span><span id="hud-branch-name">…</span>
+  </button>
+  <span class="workchip"><span class="wdot"></span>working</span>
+  <div class="viewseg" role="tablist" aria-label="View">
+    <button id="view-2d" role="tab" title="Flat radial map">2D</button>
+    <button id="view-3d" role="tab" title="Orbital galaxy">3D</button>
+  </div>
+  <div class="hud-search">
+    <input id="searchbox" type="search" placeholder="search files   /" aria-label="Search files" autocomplete="off" />
+    <div class="search-drop" id="search-drop" role="listbox" hidden></div>
+  </div>
+  <span class="extchips" id="extchips"></span>
+  <span class="hud-spacer"></span>
+  <div class="counts" id="counts"></div>
+  <button class="hud-chip" id="hud-engine" title="Engine — open control center"><span class="dot" id="d-engine"></span><span class="hud-engine-label">engine</span></button>
+  <span id="devzone"></span>
+  <button class="linkbtn" id="rescan">Rescan repo</button>
+  <button class="hud-toggle" id="toggle-right" aria-controls="drawer-right" aria-expanded="true" title="Work panel  ]">☷<span class="hud-badge" id="hud-badge" hidden></span></button>
+</header>
+
+<main id="stage">
+  <section id="repoviz">
+    <div class="viz-shell" id="viz-shell">
+      <canvas id="viz-base"></canvas><canvas id="viz-fx"></canvas>
+      <div class="viz-tip" id="viz-tip" hidden></div>
+      <div class="viz-ticker" id="viz-ticker"></div>
+      <div class="viz-legend" id="viz-legend" hidden></div>
+    </div>
+    <div class="viz-hud">
+      <span class="n" id="viz-count"></span>
+      <button class="viztool" id="viz-zin" title="Zoom in">＋</button>
+      <button class="viztool" id="viz-zout" title="Zoom out">−</button>
+      <button class="viztool" id="viz-fit" title="Fit whole repo (f)">⌖ fit</button>
+      <button class="viztool" id="viz-heat" title="Color by recent commit activity (h)">heat</button>
+      <button class="viztool" id="viz-help" title="Legend">?</button>
+    </div>
+  </section>
+
+  <section id="repoviz3d">
+    <div class="viz-shell" id="viz3d-shell">
+      <canvas id="viz3d-gl"></canvas><canvas id="viz3d-labels"></canvas>
+      <div class="viz-tip" id="viz3d-tip" hidden></div>
+      <div class="viz-ticker" id="viz3d-ticker"></div>
+      <div class="viz-legend" id="viz3d-legend" hidden></div>
+    </div>
+    <div class="viz-hud">
+      <span class="n" id="viz3d-count"></span>
+      <button class="viztool" id="v3-zin" title="Dolly in">＋</button>
+      <button class="viztool" id="v3-zout" title="Dolly out">−</button>
+      <button class="viztool" id="v3-fit" title="Frame whole galaxy (f)">⌖ fit</button>
+      <button class="viztool" id="v3-heat" title="Color by recent commit activity (h)">heat</button>
+      <button class="viztool" id="v3-help" title="Legend">?</button>
+      <button class="viztool" id="v3-spin" title="Cinematic auto-drift when idle">◌ drift</button>
+    </div>
+  </section>
+
+  <!-- shared overlays: the file popover + hovered-path breadcrumb serve both views -->
+  <div class="viz-pop" id="viz-pop" hidden></div>
+  <div class="hud-crumb" id="hud-crumb" hidden></div>
+</main>
+
+<aside id="drawer-right" class="drawer drawer-r" role="complementary" aria-label="Work panel">
+  <div class="grip" id="grip-r" title="Drag to resize"></div>
+  <div class="dr-grid" id="dr-grid">
+
+    <section class="dsec" id="sec-tasks">
+      <header class="dsech">
+        <button class="dsec-fold" data-sec="tasks" aria-expanded="true">▾</button>
+        <h3>Tasks <span class="n" id="n-needs"></span></h3>
+        <button class="runall" id="runall" hidden>Run all</button>
+      </header>
+      <div class="dbody" id="body-tasks">
+        <div class="subh">Needs work</div>
+        <div id="needs-work"></div>
+        <div class="subh">Queue <span class="n" id="n-impl"></span></div>
+        <div class="addrow">
+          <input id="goal" placeholder="Type a goal in plain words…" />
+          <button id="queue">Queue it</button>
+        </div>
+        <div id="should-implement"></div>
+      </div>
+    </section>
+
+    <div class="rowdiv" data-div="1" role="separator" aria-orientation="horizontal" aria-label="Resize tasks/activity" tabindex="0"></div>
+
+    <section class="dsec" id="sec-log">
+      <header class="dsech">
+        <button class="dsec-fold" data-sec="log" aria-expanded="true">▾</button>
+        <h3>Activity</h3>
+        <span class="logchips" id="logchips"></span>
+      </header>
+      <div class="dbody" id="body-log">
+        <div id="activity-log" role="log" aria-label="Activity log"></div>
+        <button class="newpill" id="log-newpill" hidden>↓ new</button>
+      </div>
+    </section>
+
+    <div class="rowdiv" data-div="2" role="separator" aria-orientation="horizontal" aria-label="Resize activity/chat" tabindex="0"></div>
+
+    <section class="dsec" id="sec-chat">
+      <header class="dsech">
+        <button class="dsec-fold" data-sec="chat" aria-expanded="true">▾</button>
+        <h3>Copilot</h3>
+        <button class="linkbtn" id="chat-new" title="Start a fresh conversation">New chat</button>
+      </header>
+      <div class="dbody" id="body-chat">
+        <div id="chat-msgs" aria-live="polite"></div>
+        <div class="composer">
+          <textarea id="chat-input" rows="1" placeholder="Ask about this repo… (⌘↩ to send)"></textarea>
+          <button class="btn" id="chat-send">Send</button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</aside>
+
+<aside id="drawer-left" class="drawer drawer-l" role="complementary" aria-label="Control center">
+  <div class="grip" id="grip-l" title="Drag to resize"></div>
+  <div class="dl-scroll">
+    <h2 class="dl-title">Control center</h2>
+
+    <details class="dlsec" id="sec-setup" open>
+      <summary>Repo &amp; setup <span class="sumchip" id="repo">loading…</span></summary>
+      <div class="dlbody">
+        <div class="subh2">Your repos</div>
+        <div id="repo-list" class="repolist"></div>
+        <div class="row"><button class="linkbtn" id="repo-find">Find repos on this machine</button></div>
+        <div class="field full">
+          <label for="f-repo">Repo folder</label>
+          <div class="inline">
+            <input type="text" id="f-repo" placeholder="/Users/you/your-app" />
+            <button class="btn" id="f-browse" title="Choose a folder in Finder">📁 Browse…</button>
+          </div>
+          <span class="hint">Browse picks &amp; switches in one go — or paste a path and hit Save &amp; scan.</span>
+        </div>
+        <div class="kv"><span class="k">remote</span><span class="v" id="git-remote">—</span></div>
+        <div class="row">
+          <button class="btn" id="detect">Detect from repo</button>
+          <button class="btn primary" id="save">Save &amp; scan</button>
+        </div>
+        <div class="detectmsg" id="detectmsg"></div>
+        <div class="notes" id="notes"></div>
+      </div>
+    </details>
+
+    <details class="dlsec" id="sec-branches">
+      <summary>Branches</summary>
+      <div class="dlbody">
+        <div class="kv"><span class="k">state</span><span class="v" id="t-repo">checking…</span></div>
+        <div class="field"><label for="branchsel">Switch branch</label>
+          <select id="branchsel" class="branchsel" title="Switch branch"></select>
+        </div>
+        <div class="field"><label for="f-newbranch">New branch</label>
+          <div class="inline">
+            <input type="text" id="f-newbranch" placeholder="feature/my-idea" />
+            <button class="btn" id="btn-newbranch">Create</button>
+          </div>
+        </div>
+        <div class="row">
+          <button class="linkbtn" id="btn-commit" hidden>Commit</button>
+          <button class="linkbtn" id="btn-discard" hidden>Discard</button>
+          <button class="linkbtn" id="btn-merge" hidden>Merge → main</button>
+        </div>
+      </div>
+    </details>
+
+    <details class="dlsec" id="sec-dev">
+      <summary>Run locally</summary>
+      <div class="dlbody">
+        <div class="field"><label for="f-dev">Dev command</label><input type="text" id="f-dev" placeholder="npm run dev" /></div>
+        <div class="field"><label for="f-devurl">App URL (optional)</label><input type="text" id="f-devurl" placeholder="auto-detected from output" /></div>
+        <p class="hint">Start/stop lives in the top bar; its output streams into Activity (dev filter).</p>
+      </div>
+    </details>
+
+    <details class="dlsec" id="sec-commands">
+      <summary>Saved commands</summary>
+      <div class="dlbody" id="commands-body">
+        <div id="commands-list"></div>
+        <div class="inline">
+          <input type="text" id="cmd-name" placeholder="Name" style="max-width:110px" />
+          <input type="text" id="cmd-cmd" placeholder="command to run in the repo" />
+          <button class="btn" id="cmd-add">Add</button>
+        </div>
+      </div>
+    </details>
+
+    <details class="dlsec" id="sec-engine">
+      <summary>Engine &amp; agent</summary>
+      <div class="dlbody">
+        <div class="kv"><span class="k">engine</span><span class="v" id="t-engine">checking…</span>
+          <button class="linkbtn" id="btn-login" title="Open Terminal with the Claude Code sign-in flow" hidden>Sign in</button>
+          <button class="linkbtn" id="recheck">Recheck</button>
+        </div>
+        <div class="field"><label for="f-engine">Engine command or full path</label><input type="text" id="f-engine" placeholder="claude" /></div>
+        <div class="field"><label for="f-turns">Max agent turns per task</label><input type="number" id="f-turns" min="5" max="100" /></div>
+        <div class="field"><label for="f-editor">Open-in-editor command</label><input type="text" id="f-editor" placeholder='e.g. code -g {path}:{line} — empty = system default' /></div>
+        <label class="check"><input type="checkbox" id="f-pr" /> open a PR after each run (needs gh)</label>
+        <div class="subh2">Verifier commands <span class="hint">(empty = off)</span></div>
+        <div class="field"><label for="f-tc">Typecheck</label><input type="text" id="f-tc" /></div>
+        <div class="field"><label for="f-test">Test</label><input type="text" id="f-test" /></div>
+        <div class="field"><label for="f-lint">Lint</label><input type="text" id="f-lint" /></div>
+        <div class="field"><label for="f-build">Build</label><input type="text" id="f-build" /></div>
+      </div>
+    </details>
+
+    <details class="dlsec" id="sec-appearance">
+      <summary>Appearance</summary>
+      <div class="dlbody">
+        <div id="theme-grid" role="radiogroup" aria-label="Theme"></div>
+        <div class="field">
+          <label for="f-quality">Graphics quality</label>
+          <div class="qrow"><input type="range" id="f-quality" min="0" max="3" step="1" value="2" /><span class="qname" id="q-name">High</span></div>
+          <span class="hint">Lite is the original flat map. Ultra turns the atmosphere to 11.</span>
+        </div>
+        <label class="check"><input type="checkbox" id="f-ambient" checked /> ambient effects</label>
+        <div class="subh2">Uncommitted ping</div>
+        <label class="check"><input type="checkbox" id="p-on" checked /> ripple from uncommitted files</label>
+        <div id="ping-tweaks"></div>
+        <span class="hint">The light wave that sweeps out of files you haven't committed yet.</span>
+      </div>
+    </details>
+
+    <details class="dlsec" id="sec-3d">
+      <summary>3D scene</summary>
+      <div class="dlbody">
+        <div class="field">
+          <label>Layout</label>
+          <div class="layseg" id="layseg" role="radiogroup" aria-label="3D layout">
+            <button data-lay="spiral">Spiral</button>
+            <button data-lay="shells">Shells</button>
+            <button data-lay="clusters">Clusters</button>
+          </div>
+        </div>
+        <div id="g3d-tweaks"></div>
+        <span class="hint">Live tweaks for the 3D galaxy — camera, atmosphere and layout shape. Remembered per machine.</span>
+      </div>
+    </details>
+
+    <details class="dlsec" id="sec-about">
+      <summary>About</summary>
+      <div class="dlbody about">
+        <div class="legend">
+          <span><i class="swatch" style="background:var(--ok)"></i> verified — a check confirms it's done</span>
+          <span><i class="swatch" style="background:var(--warn)"></i> review only — lands as a branch for you</span>
+        </div>
+        <p>Every Run creates a branch and a commit — never a merge, deploy, or migration; that stays with you.
+        After a run the repo stays on the new branch — <b>Run locally</b> to test it, then <b>Merge → main</b> in Branches.</p>
+        <p>Keys: <code>[</code> control center · <code>]</code> work panel · <code>f</code> fit · <code>h</code> heat · <code>⌘↩</code> send chat</p>
+      </div>
+    </details>
+  </div>
+</aside>
+
+<div id="scrim" hidden></div>
+<div id="toast" role="status" hidden></div>
+
+<script defer src="/js/util.js"></script>
+<script defer src="/js/quality.js"></script>
+<script defer src="/js/galaxy-scenery.js"></script>
+<script defer src="/js/galaxy.js"></script>
+<script defer src="/js/gl3d.js"></script>
+<script defer src="/js/galaxy3d.js"></script>
+<script defer src="/js/ambient.js"></script>
+<script defer src="/js/theme.js"></script>
+<script defer src="/js/viz-mode.js"></script>
+<script defer src="/js/bus.js"></script>
+<script defer src="/js/status.js"></script>
+<script defer src="/js/settings.js"></script>
+<script defer src="/js/board.js"></script>
+<script defer src="/js/devserver.js"></script>
+<script defer src="/js/log.js"></script>
+<script defer src="/js/nav.js"></script>
+<script defer src="/js/chat.js"></script>
+<script defer src="/js/commands.js"></script>
+<script defer src="/js/drawers.js"></script>
+<script defer src="/js/main.js"></script>
+</body>
+</html>

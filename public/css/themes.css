@@ -1,0 +1,520 @@
+/* themes.css — every theme but Mission Control (which is :root in tokens.css).
+   Blocks use bare [data-theme=…] selectors so the same cascade themes both the
+   whole app (on <html>) and the picker's preview cards (each card sets its own
+   data-theme). Galaxy tokens are read by theme.js → RepoViz.retheme(). */
+
+/* shared surface recipes — every non-default theme derives its glass/cards
+   from its own bg palette; Mission Control keeps its hand-tuned originals.
+   :where() keeps this block at specificity (0,1,0) so the per-theme and
+   light-theme blocks below (also (0,1,0), but later in source order) win every
+   token they redeclare — otherwise a bare :not() would be (0,2,0) and shadow them. */
+[data-theme]:where(:not([data-theme="mission-control"])) {
+  --glass: color-mix(in srgb, var(--bg0) 93%, transparent);
+  --glass-soft: color-mix(in srgb, var(--bg0) 78%, transparent);
+  --glass-hi: color-mix(in srgb, var(--bg2) 66%, transparent);
+  --glass-lo: color-mix(in srgb, var(--bg1) 60%, transparent);
+  --panel-hi: color-mix(in srgb, var(--bg2) 85%, transparent);
+  --panel-lo: color-mix(in srgb, var(--bg1) 92%, transparent);
+  --card-hi: color-mix(in srgb, var(--bg2) 55%, var(--bg1));
+  --card-lo: color-mix(in srgb, var(--bg1) 88%, black);
+  --log-hi: color-mix(in srgb, var(--bg0) 80%, black);
+  --log-lo: color-mix(in srgb, var(--bg0) 92%, black);
+  --devlog-hi: var(--bg2);
+  --devlog-lo: var(--bg1);
+  --select-bg: color-mix(in srgb, var(--bg0) 80%, transparent);
+  --page-bg: var(--bg0);
+  --grid-dot: color-mix(in srgb, var(--muted) 7%, transparent);
+  --aurora-gradient: linear-gradient(90deg, transparent, var(--accent) 30%, var(--accent-2) 55%, var(--warn) 78%, transparent);
+  /* translucent veil — the ambient weather canvas below must show through */
+  --viz-bg: radial-gradient(ellipse at 50% 45%, color-mix(in srgb, var(--bg2) 40%, transparent), transparent 78%);
+  --scrollbar-thumb: color-mix(in srgb, var(--accent) 30%, transparent);
+  --glow-accent: color-mix(in srgb, var(--accent) 35%, transparent);
+  --glow-ok: color-mix(in srgb, var(--ok) 30%, transparent);
+  --glow-warn: color-mix(in srgb, var(--warn) 30%, transparent);
+  --glow-danger: color-mix(in srgb, var(--danger) 35%, transparent);
+  --viz-link: color-mix(in srgb, var(--muted) 45%, var(--bg0));
+  --viz-label-dir: color-mix(in srgb, var(--text) 80%, var(--accent));
+  --viz-label-file: color-mix(in srgb, var(--muted) 95%, transparent);
+  --viz-label-halo: color-mix(in srgb, var(--bg0) 85%, transparent);
+  --viz-comet: var(--warn);
+  --viz-comet-head: color-mix(in srgb, var(--warn) 45%, white);
+}
+
+/* shared light-theme adjustments */
+[data-theme="solar"], [data-theme="sakura"], [data-theme="paper"] {
+  color-scheme: light;
+  --elev-1: 0 1px 2px rgba(80, 65, 40, .14), 0 6px 16px -10px rgba(80, 65, 40, .22);
+  --elev-2: 0 2px 4px rgba(80, 65, 40, .16), 0 14px 34px -14px rgba(80, 65, 40, .3);
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23766b54'/%3E%3C/svg%3E");
+  --viz-fx-composite: source-over;
+  --viz-fx-alpha: .5;
+  --card-hi: var(--bg1);
+  --card-lo: var(--bg2);
+  --log-hi: var(--bg2);
+  --log-lo: var(--bg1);
+  --glass: color-mix(in srgb, var(--bg1) 95%, transparent);
+  --glass-soft: color-mix(in srgb, var(--bg1) 82%, transparent);
+}
+
+/* ============ HACKER — matrix terminal ============ */
+[data-theme="hacker"] {
+  --bg0: #050a06; --bg1: #0a120c; --bg2: #101d12; --line: #16331f; --line-hi: rgba(51, 255, 102, .14);
+  --text: #c8f5d0; --heading: #e2ffe8; --muted: #63a877; --faint: #3c6b4b;
+  --accent: #33ff66; --accent-bright: #8affae; --accent-2: #1bd96a; --accent-ice: #b8ffc9;
+  --ok: #33ff66; --warn: #d6e44e; --danger: #ff5544;
+  --sans: var(--mono);
+  --grid-dot: rgba(51, 255, 102, .06);
+  --aurora-gradient: linear-gradient(90deg, transparent, #33ff66 40%, #1bd96a 60%, transparent);
+  --ambient: matrix;
+  --pal-dir: #33ff66; --pal-ts: #7ef0a0; --pal-tsx: #5ef085; --pal-js: #a8f0b8; --pal-jsx: #8fdca4;
+  --pal-script: #2c9c4f; --pal-data: #6fdc8f; --pal-style: #4ce07a; --pal-markup: #98e8ac;
+  --pal-docs: #3c6b4b; --pal-sql: #5ef0c0; --pal-image: #2f8f5a; --pal-config: #2f6b44;
+  --pal-native: #45b86a; --pal-other: #1e3d28;
+  --viz-link: #1d4a2b; --viz-label-dir: #7fd99a; --viz-label-file: rgba(127, 217, 154, .9); --viz-label-halo: rgba(5, 10, 6, .85);
+  --viz-heat-0: #b8ffc9; --viz-heat-1: #5ef085; --viz-heat-2: #2c9c4f; --viz-heat-3: #155c2d; --viz-heat-4: #0b2d17;
+  --viz-heat-empty: #0e2014;
+}
+
+/* ============ RAINBOW — full-spectrum playground ============ */
+[data-theme="rainbow"] {
+  --bg0: #14121d; --bg1: #1c1928; --bg2: #262136; --line: #353049; --line-hi: rgba(171, 147, 255, .16);
+  --text: #f0eef8; --heading: #faf8ff; --muted: #9b94b3; --faint: #5e5876;
+  --accent: #7c5cff; --accent-bright: #ab93ff; --accent-2: #ff5fa2; --accent-ice: #d8ccff;
+  --ok: #2fd47a; --warn: #ffb02e; --danger: #ff4d6d;
+  --aurora-gradient: linear-gradient(90deg, transparent, #ff4d6d 15%, #ffb02e 30%, #ffe14d 45%, #3ddc84 60%, #5b8cff 75%, #c45bff 90%, transparent);
+  --ambient: hue-aurora;
+  --pal-dir: #7c5cff; --pal-ts: #5b8cff; --pal-tsx: #3f6df0; --pal-js: #ffd43b; --pal-jsx: #f5b630;
+  --pal-script: #3ddc84; --pal-data: #ff9f1a; --pal-style: #c45bff; --pal-markup: #ff5b5b;
+  --pal-docs: #9aa3b2; --pal-sql: #ff5fd2; --pal-image: #2ee6c8; --pal-config: #8d9bb5;
+  --pal-native: #ff8c5a; --pal-other: #6b7280;
+  --viz-link: #3a3554;
+  --viz-heat-0: #ffe14d; --viz-heat-1: #ff9f1a; --viz-heat-2: #c45bff; --viz-heat-3: #5b8cff; --viz-heat-4: #34406b;
+}
+
+/* ============ LAVA — molten basalt ============ */
+[data-theme="lava"] {
+  --bg0: #120a08; --bg1: #1c100c; --bg2: #261410; --line: #3a1d14; --line-hi: rgba(255, 106, 42, .16);
+  --text: #f5e3da; --heading: #fff0e8; --muted: #a98577; --faint: #6b4f43;
+  --accent: #ff6a2a; --accent-bright: #ffa56b; --accent-2: #ffc83d; --accent-ice: #ffd9b8;
+  --ok: #8bd64f; --warn: #ffc83d; --danger: #ff4d3d;
+  --page-bg: radial-gradient(120% 60% at 50% 115%, rgba(201, 46, 26, .18), transparent 60%), var(--bg0);
+  --ambient: embers;
+  --pal-dir: #ff6a2a; --pal-ts: #ffb02e; --pal-tsx: #ff9b3d; --pal-js: #ffd166; --pal-jsx: #f0b84a;
+  --pal-script: #ff8c42; --pal-data: #ffae1f; --pal-style: #ff5d2a; --pal-markup: #e8443a;
+  --pal-docs: #8a5a48; --pal-sql: #ff7a5e; --pal-image: #d98a68; --pal-config: #7a4a38;
+  --pal-native: #c96a3a; --pal-other: #4a2a1e;
+  --viz-link: #4a2418; --viz-label-dir: #e8b8a0; --viz-label-file: rgba(220, 170, 140, .9); --viz-label-halo: rgba(18, 10, 8, .85);
+  --viz-heat-0: #ffe08a; --viz-heat-1: #ff7a2a; --viz-heat-2: #c92e1a; --viz-heat-3: #5a1410; --viz-heat-4: #2a0d08;
+  --viz-heat-empty: #2e1812;
+}
+
+/* ============ FIRE — open flame, gold-forward ============ */
+[data-theme="fire"] {
+  --bg0: #170d05; --bg1: #211309; --bg2: #2b190c; --line: #44290f; --line-hi: rgba(255, 174, 31, .16);
+  --text: #fdeede; --heading: #fff7ea; --muted: #b39376; --faint: #6e5a3e;
+  --accent: #ffae1f; --accent-bright: #ffd166; --accent-2: #ff5d2a; --accent-ice: #fff3c4;
+  --ok: #7fce62; --warn: #ffae1f; --danger: #ff3b30;
+  --page-bg: radial-gradient(130% 70% at 50% 112%, rgba(255, 140, 42, .14), transparent 62%), var(--bg0);
+  --ambient: embers;
+  --pal-dir: #ffae1f; --pal-ts: #ffd166; --pal-tsx: #ffc23d; --pal-js: #ffe08a; --pal-jsx: #f0c553;
+  --pal-script: #ff8c2a; --pal-data: #ffae1f; --pal-style: #ff6a3d; --pal-markup: #ff5d2a;
+  --pal-docs: #a07a52; --pal-sql: #ff9b5e; --pal-image: #d9a23f; --pal-config: #8a6a3a;
+  --pal-native: #e07a3a; --pal-other: #5a3a1e;
+  --viz-link: #4d3110;
+  --viz-comet: #ffd166; --viz-comet-head: #fff3c4;
+  --viz-heat-0: #fff3b0; --viz-heat-1: #ffd166; --viz-heat-2: #ff8c2a; --viz-heat-3: #a83a16; --viz-heat-4: #3d2208;
+  --viz-heat-empty: #33220e;
+}
+
+/* ============ RAINY — overcast slate ============ */
+[data-theme="rainy"] {
+  --bg0: #0e1216; --bg1: #151b21; --bg2: #1b232b; --line: #27323c; --line-hi: rgba(95, 180, 232, .14);
+  --text: #dfe8ee; --heading: #eef5fa; --muted: #8298a7; --faint: #51626e;
+  --accent: #5fb4e8; --accent-bright: #9cd6f7; --accent-2: #7a90e8; --accent-ice: #cfeafd;
+  --ok: #51c28a; --warn: #e0b34e; --danger: #e06a5a;
+  --page-bg: linear-gradient(180deg, #121922, #0b0f13);
+  --aurora-gradient: linear-gradient(90deg, transparent, rgba(95, 180, 232, .4) 35%, rgba(122, 144, 232, .35) 60%, transparent);
+  --ambient: rain;
+  --pal-dir: #5fb4e8; --pal-ts: #7aa8e8; --pal-tsx: #5d8ad0; --pal-js: #b0b86a; --pal-jsx: #98a45a;
+  --pal-script: #51c28a; --pal-data: #d0a955; --pal-style: #9a8ad0; --pal-markup: #d07a6a;
+  --pal-docs: #8298a7; --pal-sql: #b87ab0; --pal-image: #5dbb9f; --pal-config: #6a7d8a;
+  --pal-native: #c08a70; --pal-other: #46535c;
+  --viz-link: #2a3946;
+  --viz-heat-0: #9cd6f7; --viz-heat-1: #5fa8cf; --viz-heat-2: #3a7693; --viz-heat-3: #27485c; --viz-heat-4: #1b2730;
+}
+
+/* ============ SYNTHWAVE — neon horizon ============ */
+[data-theme="synthwave"] {
+  --bg0: #16102b; --bg1: #1f1640; --bg2: #2a1d52; --line: #3c2a6e; --line-hi: rgba(255, 61, 220, .18);
+  --text: #f3e9ff; --heading: #fdf6ff; --muted: #a78fd0; --faint: #6a5694;
+  --accent: #ff3ddc; --accent-bright: #ff8aec; --accent-2: #19d3ff; --accent-ice: #ffd2f7;
+  --ok: #3ef0b0; --warn: #ffc857; --danger: #ff4f7b;
+  --page-bg: radial-gradient(140% 50% at 50% 105%, rgba(255, 61, 220, .16), transparent 60%), var(--bg0);
+  --ambient: retro-grid;
+  --pal-dir: #ff3ddc; --pal-ts: #19d3ff; --pal-tsx: #14a8d6; --pal-js: #ffe44d; --pal-jsx: #f0c93d;
+  --pal-script: #3ef0b0; --pal-data: #ffc857; --pal-style: #c45bff; --pal-markup: #ff4f7b;
+  --pal-docs: #a78fd0; --pal-sql: #ff5fd2; --pal-image: #2ee6c8; --pal-config: #7a6aa8;
+  --pal-native: #ff8c5a; --pal-other: #564a7a;
+  --viz-link: #3c2a6e; --viz-label-dir: #cdb8f0; --viz-label-halo: rgba(22, 16, 43, .85);
+  --viz-heat-0: #ff8aec; --viz-heat-1: #c45bff; --viz-heat-2: #6d4ad6; --viz-heat-3: #3c2a6e; --viz-heat-4: #241a4a;
+}
+
+/* ============ DEEP SPACE — near-black observatory ============ */
+[data-theme="deep-space"] {
+  --bg0: #06070c; --bg1: #0c0e16; --bg2: #131626; --line: #1e2236; --line-hi: rgba(140, 158, 255, .14);
+  --text: #e6e9f5; --heading: #f4f6ff; --muted: #8a90ab; --faint: #545a73;
+  --accent: #8c9eff; --accent-bright: #c3cdff; --accent-2: #5e8fe6; --accent-ice: #dde4ff;
+  --ok: #4fc985; --warn: #d9a23f; --danger: #d95c4f;
+  --page-bg:
+    radial-gradient(900px 600px at 20% 10%, rgba(94, 100, 200, .05), transparent 60%),
+    radial-gradient(800px 500px at 85% 80%, rgba(79, 160, 200, .04), transparent 60%),
+    var(--bg0);
+  --ambient: stars;
+  /* default file palette inherits :root — only the chrome shifts indigo */
+  --viz-link: #232a44; --viz-label-halo: rgba(6, 7, 12, .85);
+  --viz-heat-0: #ffd98a; --viz-heat-1: #c79a55; --viz-heat-2: #6d6a8a; --viz-heat-3: #363c5e; --viz-heat-4: #1a1e33;
+}
+
+/* ============ ARCTIC — ice field ============ */
+[data-theme="arctic"] {
+  --bg0: #0b1418; --bg1: #121e24; --bg2: #182830; --line: #24404b; --line-hi: rgba(111, 227, 225, .15);
+  --text: #e7f4f8; --heading: #f4fbfd; --muted: #8fb4bf; --faint: #57727b;
+  --accent: #6fe3e1; --accent-bright: #b2f5f0; --accent-2: #8ab4ff; --accent-ice: #e3fbfa;
+  --ok: #5fd6a0; --warn: #e8c069; --danger: #e0614b;
+  --ambient: snow;
+  --pal-dir: #6fe3e1; --pal-ts: #8ab4ff; --pal-tsx: #6a94e0; --pal-js: #c8e8a0; --pal-jsx: #aacf88;
+  --pal-script: #5fd6a0; --pal-data: #e8c069; --pal-style: #b2a8f0; --pal-markup: #e08a7a;
+  --pal-docs: #8fb4bf; --pal-sql: #d678b6; --pal-image: #7fd9b8; --pal-config: #7d96a0;
+  --pal-native: #d9a07a; --pal-other: #4a626b;
+  --viz-link: #234049;
+  --viz-heat-0: #d8fbff; --viz-heat-1: #8fe3e8; --viz-heat-2: #4d9aa8; --viz-heat-3: #27606e; --viz-heat-4: #11242c;
+}
+
+/* ============ SOLAR — warm daylight (LIGHT) ============ */
+[data-theme="solar"] {
+  --bg0: #f6f1e7; --bg1: #fffaf0; --bg2: #fff1d6; --line: #e0d5bf; --line-hi: rgba(120, 100, 60, .18);
+  --text: #2b2417; --heading: #1c170d; --muted: #6f6450; --faint: #9a8e74;
+  --accent: #c2410c; --accent-bright: #9a3412; --accent-2: #b45309; --accent-ice: #e8a87c;
+  --ok: #15803d; --warn: #b45309; --danger: #c0392b;
+  --page-bg: radial-gradient(1000px 700px at 12% -10%, rgba(255, 200, 90, .25), transparent 55%), var(--bg0);
+  --grid-dot: rgba(110, 90, 50, .1);
+  --scrollbar-thumb: color-mix(in srgb, var(--accent) 40%, transparent);
+  --ambient: sun-rays;
+  --pal-dir: #c2410c; --pal-ts: #1d4ed8; --pal-tsx: #1e40af; --pal-js: #a16207; --pal-jsx: #854d0e;
+  --pal-script: #15803d; --pal-data: #b45309; --pal-style: #7e22ce; --pal-markup: #be123c;
+  --pal-docs: #6f6450; --pal-sql: #be2f8b; --pal-image: #0f766e; --pal-config: #57534e;
+  --pal-native: #9a3412; --pal-other: #9b8f76;
+  --viz-link: #cdbfa3; --viz-label-dir: #4a4030; --viz-label-file: rgba(111, 100, 80, .95); --viz-label-halo: rgba(246, 241, 231, .9);
+  --viz-heat-0: #92400e; --viz-heat-1: #c2410c; --viz-heat-2: #d9a23f; --viz-heat-3: #d9cdaf; --viz-heat-4: #e7dcc3;
+  --viz-heat-empty: #ddd2bc;
+}
+
+/* ============ OCEAN — deep water ============ */
+[data-theme="ocean"] {
+  --bg0: #04141c; --bg1: #0a1f2a; --bg2: #102b38; --line: #1c4254; --line-hi: rgba(45, 212, 191, .15);
+  --text: #ddf1f7; --heading: #effbff; --muted: #7fa8b8; --faint: #4d6b78;
+  --accent: #2dd4bf; --accent-bright: #7ef0e0; --accent-2: #38bdf8; --accent-ice: #c8f7f0;
+  --ok: #34d399; --warn: #fbbf24; --danger: #fb7185;
+  --page-bg: linear-gradient(180deg, #07202c, #02090d);
+  --ambient: bubbles;
+  --pal-dir: #2dd4bf; --pal-ts: #38bdf8; --pal-tsx: #2196d6; --pal-js: #b8d96a; --pal-jsx: #9bc153;
+  --pal-script: #34d399; --pal-data: #fbbf24; --pal-style: #818cf8; --pal-markup: #fb7185;
+  --pal-docs: #7fa8b8; --pal-sql: #e879b9; --pal-image: #5eead4; --pal-config: #5a7d8a;
+  --pal-native: #fdba74; --pal-other: #3d5a66;
+  --viz-link: #1c4254;
+  --viz-heat-0: #7ef0e0; --viz-heat-1: #36b3a8; --viz-heat-2: #1d7a85; --viz-heat-3: #114a58; --viz-heat-4: #0a2430;
+}
+
+/* ============ FOREST — moss and canopy ============ */
+[data-theme="forest"] {
+  --bg0: #0c120c; --bg1: #131a12; --bg2: #1a241a; --line: #2a3a28; --line-hi: rgba(124, 194, 77, .15);
+  --text: #e7efe3; --heading: #f3f9ef; --muted: #93a68d; --faint: #5a6b55;
+  --accent: #7cc24d; --accent-bright: #aade7c; --accent-2: #d9a23f; --accent-ice: #d2eebc;
+  --ok: #7cc24d; --warn: #d9a23f; --danger: #d95c4f;
+  --page-bg: radial-gradient(120% 80% at 50% -20%, rgba(124, 194, 77, .07), transparent 55%), var(--bg0);
+  --ambient: fireflies;
+  --pal-dir: #7cc24d; --pal-ts: #6aab8f; --pal-tsx: #54907a; --pal-js: #d9c25d; --pal-jsx: #bda94e;
+  --pal-script: #5d9e44; --pal-data: #d9a23f; --pal-style: #a98ad0; --pal-markup: #c96a4a;
+  --pal-docs: #8a9a7a; --pal-sql: #c478a6; --pal-image: #88c9a0; --pal-config: #6f7d62;
+  --pal-native: #b07d4f; --pal-other: #3d4a38;
+  --viz-link: #283a26;
+  --viz-heat-0: #e8e29a; --viz-heat-1: #a9c25d; --viz-heat-2: #5d8a3a; --viz-heat-3: #2c4a20; --viz-heat-4: #16240f;
+}
+
+/* ============ SAKURA — spring pastel (LIGHT) ============ */
+[data-theme="sakura"] {
+  --bg0: #faf3f3; --bg1: #fff8f8; --bg2: #ffeef1; --line: #ecd5da; --line-hi: rgba(180, 120, 135, .2);
+  --text: #3d2a30; --heading: #2b1b20; --muted: #8a6670; --faint: #b395a0;
+  --accent: #d4567a; --accent-bright: #b03a5e; --accent-2: #7d9b6a; --accent-ice: #f0a8bd;
+  --ok: #3e8e5a; --warn: #b07d2b; --danger: #c0392b;
+  --page-bg: radial-gradient(900px 600px at 88% -10%, rgba(244, 170, 190, .35), transparent 55%), var(--bg0);
+  --grid-dot: rgba(180, 120, 135, .12);
+  --ambient: petals;
+  --pal-dir: #d4567a; --pal-ts: #5a6db8; --pal-tsx: #45579e; --pal-js: #a08a2b; --pal-jsx: #84711f;
+  --pal-script: #3e8e5a; --pal-data: #b07d2b; --pal-style: #9a5ab0; --pal-markup: #c0392b;
+  --pal-docs: #8a6670; --pal-sql: #b8478f; --pal-image: #2e8a78; --pal-config: #7a6a70;
+  --pal-native: #b06a4a; --pal-other: #b0a0a6;
+  --viz-link: #e3c9cf; --viz-label-dir: #5c424a; --viz-label-file: rgba(110, 80, 90, .95); --viz-label-halo: rgba(250, 243, 243, .9);
+  --viz-heat-0: #c2406e; --viz-heat-1: #d4789a; --viz-heat-2: #dba8b8; --viz-heat-3: #e8cdd5; --viz-heat-4: #eedfe2;
+  --viz-heat-empty: #e8dadc;
+}
+
+/* ============ CYBERPUNK — acid yellow / glitch ============ */
+[data-theme="cyberpunk"] {
+  --bg0: #0a0a12; --bg1: #12121e; --bg2: #1a1a2c; --line: #2c2c46; --line-hi: rgba(252, 238, 10, .15);
+  --text: #eef0ff; --heading: #fbfcff; --muted: #9a9ab8; --faint: #5c5c78;
+  --accent: #fcee0a; --accent-bright: #ffff66; --accent-2: #00f0ff; --accent-ice: #fdf7a8;
+  --ok: #0aff9d; --warn: #fcee0a; --danger: #ff003c;
+  --aurora-gradient: linear-gradient(90deg, transparent, #00f0ff 40%, #fcee0a 60%, transparent);
+  --ambient: scanlines;
+  --pal-dir: #fcee0a; --pal-ts: #00f0ff; --pal-tsx: #00c0d6; --pal-js: #ffff66; --pal-jsx: #e0e052;
+  --pal-script: #0aff9d; --pal-data: #ffd60a; --pal-style: #c45bff; --pal-markup: #ff2a6d;
+  --pal-docs: #9a9ab8; --pal-sql: #ff5fd2; --pal-image: #00d6a4; --pal-config: #6a6a8a;
+  --pal-native: #ff8c3d; --pal-other: #44445c;
+  --viz-link: #2c2c46;
+  --viz-heat-0: #fcee0a; --viz-heat-1: #c8c020; --viz-heat-2: #6a6a40; --viz-heat-3: #34344a; --viz-heat-4: #1a1a2c;
+}
+
+/* ============ MIDNIGHT — monochrome OLED quiet ============ */
+[data-theme="midnight"] {
+  --bg0: #000004; --bg1: #0a0c12; --bg2: #12141c; --line: #1f222c; --line-hi: rgba(142, 160, 192, .12);
+  --text: #d5dae4; --heading: #e8ecf4; --muted: #7d8494; --faint: #4a505e;
+  --accent: #8ea0c0; --accent-bright: #b6c4dd; --accent-2: #6b7890; --accent-ice: #d2dcec;
+  --ok: #5fae84; --warn: #c2a05a; --danger: #c46a5e;
+  --glow-accent: transparent; --glow-ok: transparent; --glow-warn: transparent; --glow-danger: transparent;
+  --aurora-gradient: none;
+  --grid-dot: transparent;
+  --ambient: none;
+  --pal-dir: #8ea0c0; --pal-ts: #aab4c4; --pal-tsx: #919dae; --pal-js: #c0c8d4; --pal-jsx: #a8b0bc;
+  --pal-script: #7f93a8; --pal-data: #98a0ac; --pal-style: #b4aec4; --pal-markup: #a89098;
+  --pal-docs: #6a7280; --pal-sql: #9aa4c0; --pal-image: #7e98a0; --pal-config: #5a6270;
+  --pal-native: #94867c; --pal-other: #3a4048;
+  --viz-link: #1c1f28;
+  --viz-heat-0: #e2e6ee; --viz-heat-1: #9aa2b2; --viz-heat-2: #5c6474; --viz-heat-3: #333947; --viz-heat-4: #181c26;
+}
+
+/* ============ PAPER — print / manuscript (LIGHT) ============ */
+[data-theme="paper"] {
+  --bg0: #f4f1ea; --bg1: #fffdf7; --bg2: #efe9dc; --line: #d8d2c2; --line-hi: rgba(110, 100, 70, .2);
+  --text: #1f1d18; --heading: #14120e; --muted: #5c574a; --faint: #97917e;
+  --accent: #2456a6; --accent-bright: #1a3f7e; --accent-2: #1f6f54; --accent-ice: #7d9cc9;
+  --ok: #1e7a3c; --warn: #9a6700; --danger: #b3261e;
+  --r: 6px; --r-sm: 5px;
+  --aurora-gradient: none;
+  --grid-dot: rgba(110, 100, 70, .08);
+  --viz-fx-alpha: .45;
+  --ambient: none;
+  --pal-dir: #2456a6; --pal-ts: #24589e; --pal-tsx: #1c4378; --pal-js: #8a6d12; --pal-jsx: #6e570e;
+  --pal-script: #1f6f54; --pal-data: #9a6700; --pal-style: #6d3a9e; --pal-markup: #a3321e;
+  --pal-docs: #5c574a; --pal-sql: #963a78; --pal-image: #1f6f6f; --pal-config: #6e675a;
+  --pal-native: #8a4a2a; --pal-other: #aaa392;
+  --viz-link: #c9c2b0; --viz-label-dir: #4a463c; --viz-label-file: rgba(80, 75, 60, .95); --viz-label-halo: rgba(244, 241, 234, .9);
+  --viz-heat-0: #7a4a21; --viz-heat-1: #a4744a; --viz-heat-2: #c7a87e; --viz-heat-3: #ddd0b6; --viz-heat-4: #e6dfd0;
+  --viz-heat-empty: #ded7c6;
+}
+
+/* ================= CSS-only ambient layers ================= */
+/* (the #ambient canvas effects — rain/embers/matrix/snow/stars/bubbles/
+   fireflies/petals — are driven by ambient.js; these are the pure-CSS ones) */
+
+body[data-ambient="hue-aurora"] #fx-l1 {
+  background:
+    linear-gradient(115deg, rgba(255, 77, 109, .12), rgba(255, 176, 46, .1), rgba(61, 220, 132, .1), rgba(91, 140, 255, .12), rgba(196, 91, 255, .1));
+  filter: blur(60px) saturate(1.4);
+  animation: wl-hue 40s linear infinite;
+  opacity: .5;
+}
+@keyframes wl-hue { to { filter: blur(60px) saturate(1.4) hue-rotate(360deg) } }
+
+body[data-ambient="retro-grid"] #fx-l1 {
+  top: auto; height: 42vh;
+  background:
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--accent-2) 22%, transparent) 0 1px, transparent 1px 60px),
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--accent) 20%, transparent) 0 1px, transparent 1px 34px);
+  transform: perspective(420px) rotateX(58deg) scale(1.6);
+  transform-origin: 50% 100%;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 55%);
+  mask-image: linear-gradient(180deg, transparent, #000 55%);
+  animation: wl-gridrun 3.2s linear infinite;
+  opacity: .5;
+}
+@keyframes wl-gridrun { to { background-position: 0 34px, 0 34px } }
+
+body[data-ambient="sun-rays"] #fx-l1 {
+  background: conic-gradient(from 0deg at 14% -8%,
+    transparent 0deg, rgba(255, 190, 80, .14) 8deg, transparent 16deg,
+    transparent 30deg, rgba(255, 190, 80, .1) 38deg, transparent 46deg,
+    transparent 60deg, rgba(255, 190, 80, .12) 70deg, transparent 80deg);
+  animation: wl-rays 120s linear infinite;
+}
+@keyframes wl-rays { to { transform: rotate(8deg) } }
+
+body[data-ambient="scanlines"] #fx-l1 {
+  background: repeating-linear-gradient(0deg, transparent 0 2px, rgba(0, 0, 0, .14) 2px 3px);
+  animation: wl-flicker 8s steps(60) infinite;
+  opacity: .8;
+}
+@keyframes wl-flicker { 0%, 96%, 100% { opacity: .8 } 97% { opacity: .6 } 98% { opacity: .85 } }
+
+/* keyed off body[data-ambient] (set per-theme + gated by the Appearance toggle),
+   not html[data-theme], so turning ambient effects off actually stops them */
+body[data-ambient="bubbles"] #fx-l2 {
+  background:
+    radial-gradient(40% 30% at 25% 20%, rgba(56, 189, 248, .07), transparent 70%),
+    radial-gradient(35% 28% at 75% 65%, rgba(45, 212, 191, .06), transparent 70%);
+  filter: blur(30px);
+  animation: wl-caustics 46s ease-in-out infinite alternate;
+}
+@keyframes wl-caustics { to { transform: translate(4%, -3%) scale(1.08) } }
+
+body[data-ambient="snow"] #fx-l2 {
+  background: linear-gradient(100deg, rgba(111, 227, 225, .08), rgba(138, 180, 255, .07), rgba(178, 130, 255, .05));
+  top: 0; height: 32vh;
+  filter: blur(50px);
+  animation: wl-hue 60s linear infinite;
+  opacity: .6;
+}
+
+/* rainy lightning — toggled by ambient.js, instant under reduced motion */
+body.amb-flash #fx-l2 { background: rgba(255, 255, 255, .08) }
+
+/* ================= galaxy scenery — per-theme atmosphere ================= */
+/* Every theme retints the starfield, nebulae, spikes, rings, node cores and
+   node SHAPES. Defaults (Mission Control) live in tokens.css :root. */
+
+[data-theme="hacker"] {
+  --viz-node-shape: glyph;
+  --viz-neb-1: #103a1e; --viz-neb-2: #1bd96a; --viz-neb-3: #0a2d14; --viz-neb-alpha: .1;
+  --viz-star-1: #7fd99a; --viz-star-2: #2c9c4f; --viz-star-density: .7;
+  --viz-spike: #b8ffc9; --viz-spike-alpha: .45;
+  --viz-ring: #33ff66; --viz-ring-alpha: .08;
+  --viz-core: #eaffe8;
+  --viz-vig: rgba(2, 8, 3, .7);
+}
+[data-theme="rainbow"] {
+  --viz-node-shape: star;
+  --viz-neb-1: #ff5fa2; --viz-neb-2: #5b8cff; --viz-neb-3: #ffe14d; --viz-neb-alpha: .2;
+  --viz-star-1: #f0eef8; --viz-star-2: #9b94b3; --viz-star-density: 1.1;
+  --viz-spike: #d8ccff; --viz-spike-alpha: .5;
+  --viz-ring: #7c5cff; --viz-ring-alpha: .08;
+  --viz-core: #ffffff;
+  --viz-vig: rgba(10, 8, 18, .6);
+}
+[data-theme="lava"] {
+  --viz-neb-1: #c92e1a; --viz-neb-2: #ff7a2a; --viz-neb-3: #5a1410; --viz-neb-alpha: .22;
+  --viz-star-1: #e8b8a0; --viz-star-2: #6b4f43; --viz-star-density: .5;
+  --viz-spike: #ffd9b8; --viz-spike-alpha: .45;
+  --viz-ring: #ff6a2a; --viz-ring-alpha: .07;
+  --viz-core: #fff3e0;
+  --viz-vig: rgba(10, 4, 2, .7);
+  --viz-atmo: radial-gradient(90% 35% at 50% 112%, rgba(255, 106, 42, .13), transparent 62%);
+}
+[data-theme="fire"] {
+  --viz-node-shape: spark;
+  --viz-neb-1: #ff8c2a; --viz-neb-2: #ffd166; --viz-neb-3: #a83a16; --viz-neb-alpha: .18;
+  --viz-star-1: #fff3c4; --viz-star-2: #b39376; --viz-star-density: .6;
+  --viz-spike: #fff3c4; --viz-spike-alpha: .55;
+  --viz-ring: #ffae1f; --viz-ring-alpha: .06;
+  --viz-core: #fff8e8;
+  --viz-vig: rgba(12, 6, 1, .65);
+  --viz-atmo: radial-gradient(100% 30% at 50% 110%, rgba(255, 174, 31, .12), transparent 62%);
+}
+[data-theme="rainy"] {
+  --viz-node-shape: drop;
+  --viz-neb-1: #27485c; --viz-neb-2: #3a7693; --viz-neb-3: #1b2730; --viz-neb-alpha: .12;
+  --viz-star-density: 0;
+  --viz-spike: #9cd6f7; --viz-spike-alpha: .25;
+  --viz-ring: #5fb4e8; --viz-ring-alpha: .05;
+  --viz-core: #dff3fd;
+  --viz-vig: rgba(5, 8, 11, .65);
+  --viz-atmo: linear-gradient(180deg, rgba(95, 180, 232, .05), transparent 30%);
+}
+[data-theme="synthwave"] {
+  --viz-node-shape: diamond;
+  --viz-neb-1: #ff3ddc; --viz-neb-2: #19d3ff; --viz-neb-3: #6d4ad6; --viz-neb-alpha: .22;
+  --viz-star-1: #ffd2f7; --viz-star-2: #a78fd0; --viz-star-density: 1.2;
+  --viz-spike: #ff8aec; --viz-spike-alpha: .6;
+  --viz-ring: #ff3ddc; --viz-ring-alpha: .1;
+  --viz-core: #fff0fc;
+  --viz-vig: rgba(12, 6, 26, .65);
+  --viz-atmo: radial-gradient(100% 30% at 50% 108%, rgba(255, 61, 220, .14), transparent 65%);
+}
+[data-theme="deep-space"] {
+  --viz-node-shape: star;
+  --viz-neb-1: #2b3a6e; --viz-neb-2: #3c2a6e; --viz-neb-3: #16324e; --viz-neb-alpha: .14;
+  --viz-star-1: #dde4ff; --viz-star-2: #545a73; --viz-star-density: 1.9;
+  --viz-spike: #c3cdff; --viz-spike-alpha: .55;
+  --viz-ring: #8c9eff; --viz-ring-alpha: .06;
+  --viz-core: #f4f6ff;
+  --viz-vig: rgba(2, 3, 6, .75);
+}
+[data-theme="arctic"] {
+  --viz-node-shape: flake;
+  --viz-neb-1: #1d5a8a; --viz-neb-2: #6fe3e1; --viz-neb-3: #27606e; --viz-neb-alpha: .15;
+  --viz-star-1: #e3fbfa; --viz-star-2: #8fb4bf; --viz-star-density: 1;
+  --viz-spike: #d8fbff; --viz-spike-alpha: .5;
+  --viz-ring: #6fe3e1; --viz-ring-alpha: .07;
+  --viz-core: #f4fdff;
+  --viz-vig: rgba(3, 8, 11, .6);
+}
+[data-theme="solar"] {
+  --viz-neb-1: #ffd9a0; --viz-neb-2: #ffe8c2; --viz-neb-3: #f0c060; --viz-neb-alpha: .12;
+  --viz-star-1: #9a6b2a; --viz-star-2: #c2a06a; --viz-star-density: .25;
+  --viz-spike: #c2410c; --viz-spike-alpha: .2;
+  --viz-ring: #c2410c; --viz-ring-alpha: .06;
+  --viz-core: #fffdf5;
+  --viz-vig: rgba(120, 90, 40, .18);
+}
+[data-theme="ocean"] {
+  --viz-node-shape: drop;
+  --viz-neb-1: #0a3d52; --viz-neb-2: #1d7a85; --viz-neb-3: #114a58; --viz-neb-alpha: .2;
+  --viz-star-1: #c8f7f0; --viz-star-2: #4d6b78; --viz-star-density: .4;
+  --viz-spike: #7ef0e0; --viz-spike-alpha: .4;
+  --viz-ring: #2dd4bf; --viz-ring-alpha: .06;
+  --viz-core: #e8fffc;
+  --viz-vig: rgba(1, 8, 12, .7);
+  --viz-atmo: linear-gradient(180deg, rgba(56, 189, 248, .07), transparent 35%);
+}
+[data-theme="forest"] {
+  --viz-node-shape: petal;
+  --viz-neb-1: #1c3a16; --viz-neb-2: #5d8a3a; --viz-neb-3: #16240f; --viz-neb-alpha: .14;
+  --viz-star-1: #d2eebc; --viz-star-2: #5a6b55; --viz-star-density: .5;
+  --viz-spike: #d2eebc; --viz-spike-alpha: .35;
+  --viz-ring: #7cc24d; --viz-ring-alpha: .06;
+  --viz-core: #f3f9ef;
+  --viz-vig: rgba(4, 8, 3, .65);
+}
+[data-theme="sakura"] {
+  --viz-node-shape: petal;
+  --viz-neb-1: #f4aabe; --viz-neb-2: #f7d4dd; --viz-neb-3: #e8cdd5; --viz-neb-alpha: .18;
+  --viz-star-1: #c2406e; --viz-star-2: #b395a0; --viz-star-density: .3;
+  --viz-spike: #d4567a; --viz-spike-alpha: .22;
+  --viz-ring: #d4567a; --viz-ring-alpha: .08;
+  --viz-core: #ffffff;
+  --viz-vig: rgba(140, 90, 105, .16);
+}
+[data-theme="cyberpunk"] {
+  --viz-node-shape: square;
+  --viz-neb-1: #fcee0a; --viz-neb-2: #00f0ff; --viz-neb-3: #2a2a4a; --viz-neb-alpha: .12;
+  --viz-star-1: #fdf7a8; --viz-star-2: #9a9ab8; --viz-star-density: .8;
+  --viz-spike: #ffff66; --viz-spike-alpha: .5;
+  --viz-ring: #00f0ff; --viz-ring-alpha: .08;
+  --viz-core: #ffffe8;
+  --viz-vig: rgba(4, 4, 10, .7);
+}
+[data-theme="midnight"] {
+  --viz-neb-alpha: 0;
+  --viz-star-1: #d2dcec; --viz-star-2: #4a505e; --viz-star-density: .5;
+  --viz-spike: #b6c4dd; --viz-spike-alpha: .12;
+  --viz-ring: #8ea0c0; --viz-ring-alpha: .04;
+  --viz-core: #e8ecf4;
+  --viz-vig: rgba(0, 0, 2, .8);
+}
+[data-theme="paper"] {
+  --viz-neb-alpha: 0;
+  --viz-star-density: 0;
+  --viz-spike-alpha: 0;
+  --viz-ring: #2456a6; --viz-ring-alpha: .06;
+  --viz-core: #fffdf7;
+  --viz-vig: rgba(90, 80, 60, .12);
+}

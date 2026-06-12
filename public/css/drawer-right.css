@@ -1,0 +1,289 @@
+/* drawer-right.css — the work panel: tasks + queue, activity log, copilot chat. */
+
+/* three resizable rows */
+.dr-grid {
+  flex: 1; min-width: 0; display: grid;
+  grid-template-rows: minmax(120px, 38fr) 6px minmax(90px, 30fr) 6px minmax(160px, 32fr);
+  height: 100%; overflow: hidden;
+}
+.rowdiv { cursor: row-resize; position: relative; z-index: 2; transition: background var(--t-fast) var(--ease) }
+.rowdiv:hover, .rowdiv.dragging, .rowdiv:focus-visible { background: color-mix(in srgb, var(--accent) 25%, transparent); outline: none }
+
+.dsec { display: flex; flex-direction: column; min-height: 0; overflow: hidden }
+.dsech {
+  flex: none; display: flex; align-items: center; gap: 8px; padding: 7px 12px 7px 8px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+}
+.dsech h3 {
+  margin: 0; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600; display: flex; align-items: center; gap: 7px;
+}
+.dsech .n { color: var(--faint); font-size: 11px }
+.dsec-fold {
+  background: none; border: none; color: var(--faint); font-size: 10px; padding: 2px 5px; border-radius: 5px;
+  transition: transform var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.dsec-fold:hover { color: var(--accent-bright) }
+.dsec.collapsed .dsec-fold { transform: rotate(-90deg) }
+.dsec.collapsed .dbody { display: none }
+.dbody { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px; position: relative; scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent }
+.dsech .runall {
+  margin-left: auto; background: none; border: 1px solid var(--line); color: var(--muted);
+  font-size: 11px; font-family: var(--mono); padding: 3px 11px; border-radius: 999px;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.dsech .runall:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); color: var(--accent-bright); box-shadow: 0 0 10px -4px var(--glow-accent) }
+.dsech .runall[disabled] { opacity: .5; cursor: default }
+.dsech .linkbtn { margin-left: auto }
+.dsech .runall + .linkbtn, .dsech .logchips { margin-left: auto }
+
+.subh {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--faint); margin: 6px 0 8px; padding-bottom: 5px; position: sticky; top: -10px; z-index: 3;
+  background: linear-gradient(180deg, var(--panel-lo), color-mix(in srgb, var(--panel-lo) 60%, transparent));
+  border-bottom: 1px solid var(--line);
+}
+.subh:first-child { margin-top: 0 }
+
+/* ---------- activity log ---------- */
+.logchips { display: flex; gap: 4px; flex-wrap: wrap }
+.logchip {
+  background: none; border: 1px solid var(--line); color: var(--faint); font-family: var(--mono);
+  font-size: 9.5px; padding: 2px 8px; border-radius: 999px; letter-spacing: .04em;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.logchip.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent) }
+.logchip:hover { color: var(--accent-bright) }
+#activity-log { font-family: var(--mono); font-size: 11px; line-height: 1.65; color: var(--muted) }
+.lrow { display: flex; gap: 7px; align-items: baseline; word-break: break-word }
+.lrow .lts { color: var(--faint); flex: none; font-size: 10px }
+.lrow .lk {
+  flex: none; font-size: 9px; letter-spacing: .05em; text-transform: uppercase;
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border-radius: 4px; padding: 0 5px; line-height: 1.5;
+}
+.lrow.k-run .lk { color: var(--accent) }
+.lrow.k-git .lk { color: var(--pal-style) }
+.lrow.k-dev .lk { color: var(--pal-ts) }
+.lrow.k-cmd .lk { color: var(--warn) }
+.lrow.k-chat .lk { color: var(--faint) }
+.lrow.k-scan .lk, .lrow.k-task .lk { color: var(--pal-image) }
+.lrow.k-handoff .lk { color: var(--warn) }
+.lrow.k-server .lk, .lrow.k-config .lk { color: var(--faint) }
+.lrow.verbose { opacity: .75; font-size: 10.5px }
+.lrow.err .lm { color: var(--danger) }
+.lrow.okk .lm { color: var(--ok) }
+body:not(.log-verbose) .lrow.verbose { display: none }
+#activity-log.hide-run .lrow.k-run, #activity-log.hide-git .lrow.k-git,
+#activity-log.hide-dev .lrow.k-dev, #activity-log.hide-cmd .lrow.k-cmd,
+#activity-log.hide-chat .lrow.k-chat, #activity-log.hide-scan .lrow.k-scan,
+#activity-log.hide-misc .lrow.k-misc, #activity-log.hide-misc .lrow.k-server,
+#activity-log.hide-misc .lrow.k-config, #activity-log.hide-misc .lrow.k-handoff { display: none }
+.newpill {
+  position: sticky; bottom: 6px; left: 50%; transform: translateX(-50%);
+  background: var(--glass); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent); font-family: var(--mono); font-size: 10.5px; border-radius: 999px; padding: 3px 12px;
+}
+
+/* ---------- chat ---------- */
+#body-chat { display: flex; flex-direction: column; padding: 0 }
+#chat-msgs { flex: 1; min-height: 0; overflow: auto; padding: 12px; scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent }
+.composer { flex: none; display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); align-items: flex-end }
+.composer textarea {
+  flex: 1; resize: none; max-height: 130px; background: var(--bg0); border: 1px solid var(--line);
+  border-radius: 9px; color: var(--text); padding: 8px 11px; font-size: 13px; line-height: 1.45;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.composer textarea:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.composer .btn { padding: 7px 13px; font-size: 12.5px }
+.msg { margin-bottom: 10px; max-width: 92% }
+.msg .mb {
+  border-radius: 11px; padding: 8px 12px; font-size: 13px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+}
+.msg.user { margin-left: auto }
+.msg.user .mb { background: color-mix(in srgb, var(--accent) 14%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent) }
+.msg.assistant .mb { background: var(--bg1); border: 1px solid var(--line) }
+.msg .tooluse { font-family: var(--mono); font-size: 10.5px; color: var(--faint); padding: 2px 4px }
+.msg .mb code { font-family: var(--mono); font-size: 12px; background: color-mix(in srgb, var(--bg0) 70%, transparent); border-radius: 4px; padding: 0 4px }
+.chat-empty { color: var(--faint); font-size: 12.5px; text-align: center; padding: 22px 14px }
+.chat-empty .starter {
+  display: block; width: 100%; margin-top: 8px; background: var(--bg1); border: 1px solid var(--line);
+  color: var(--muted); border-radius: 9px; padding: 7px 10px; font-size: 12px; text-align: left;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.chat-empty .starter:hover { color: var(--accent-bright); border-color: color-mix(in srgb, var(--accent) 40%, transparent) }
+
+/* handoff cards (inline in chat flow) */
+.handoff {
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); border-left: 3px solid var(--warn);
+  background: color-mix(in srgb, var(--warn) 6%, transparent);
+  border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; font-size: 12.5px;
+}
+.handoff .ht { font-weight: 600; color: var(--warn); margin-bottom: 6px; display: flex; align-items: center; gap: 8px }
+.handoff .ht .src { font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; opacity: .8 }
+.handoff ol { margin: 0 0 8px; padding-left: 20px }
+.handoff li { margin: 3px 0; line-height: 1.5 }
+.handoff code { font-family: var(--mono); font-size: 11.5px; background: color-mix(in srgb, var(--bg0) 70%, transparent); border-radius: 4px; padding: 0 5px }
+.handoff .copy {
+  background: none; border: 1px solid var(--line); color: var(--faint); border-radius: 5px;
+  font-size: 10px; padding: 1px 6px; margin-left: 5px; font-family: var(--mono); vertical-align: middle;
+}
+.handoff .copy:hover { color: var(--accent-bright); border-color: color-mix(in srgb, var(--accent) 40%, transparent) }
+.handoff .hact { display: flex; gap: 10px }
+.handoff.resolved { opacity: .55 }
+.handoff.resolved .ht { color: var(--ok) }
+
+/* ---------- task cards + queue (all theme-token driven) ---------- */
+.addrow { display: flex; gap: 8px; margin-bottom: 12px }
+.addrow input {
+  flex: 1; min-width: 0; background: var(--bg1); border: 1px solid var(--line); border-radius: 9px;
+  color: var(--text); padding: 9px 12px; font-size: 13.5px;
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.addrow input::placeholder { color: var(--faint) }
+.addrow input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent), 0 0 18px -6px var(--glow-accent);
+}
+.addrow button {
+  background: var(--bg2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 9px; padding: 0 14px; font-size: 13px; white-space: nowrap;
+  transition: border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.addrow button:hover { border-color: color-mix(in srgb, var(--accent) 55%, transparent); color: var(--accent-bright); box-shadow: 0 0 12px -6px var(--glow-accent) }
+.addrow button[disabled] { opacity: .5 }
+
+.card {
+  --edge: var(--line); --edge-glow: transparent;
+  background: linear-gradient(180deg, var(--card-hi), var(--card-lo));
+  border: 1px solid var(--line-hi); border-left: 3px solid var(--edge);
+  border-radius: var(--r); padding: 14px 15px; margin-bottom: 12px; position: relative;
+  box-shadow: var(--elev-1);
+  transition: transform var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease);
+  animation: card-in var(--t-med) var(--ease) backwards;
+  animation-delay: calc(var(--i, 0) * 30ms);
+}
+@keyframes card-in { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--elev-2), 0 0 0 1px var(--edge-glow), 0 10px 28px -14px var(--edge-glow);
+}
+.card .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px }
+.card .title { font-size: 14px; font-weight: 500; line-height: 1.4; word-break: break-word }
+.card .loc { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-top: 6px }
+.chips { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; align-items: center }
+.badge {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px; color: var(--muted);
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+.badge.ts, .badge.typescript { color: var(--pal-ts) }
+.badge.test { color: var(--danger) }
+.badge.lint { color: var(--warn) }
+.badge.build { color: var(--pal-style) }
+.badge.todo { color: var(--muted) }
+.badge.backlog { color: var(--accent) }
+.gate { font-size: 11px; color: var(--ok) }
+.gate.review { color: var(--warn) }
+.gate .dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  margin-right: 5px; vertical-align: middle; box-shadow: 0 0 6px currentColor; animation: none;
+}
+
+.run {
+  margin-left: auto; color: var(--text); border: 1px solid transparent; border-radius: 8px;
+  padding: 6px 14px; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px;
+  white-space: nowrap; flex-shrink: 0;
+  background: linear-gradient(var(--bg2), var(--bg2)) padding-box,
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 55%, transparent), rgba(125, 138, 160, .22)) border-box;
+  transition: box-shadow var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.run:hover:not([disabled]) {
+  color: var(--accent-bright);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--accent) 4%, transparent)) padding-box,
+    linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 30%, transparent)) border-box;
+  box-shadow: 0 0 18px -6px var(--glow-accent);
+}
+.run[disabled] { opacity: .55; cursor: default }
+.run .tri { font-size: 10px; display: inline-block; transition: transform var(--t-fast) var(--ease) }
+.run:hover:not([disabled]) .tri { transform: translateX(2px) }
+.dismiss {
+  background: none; border: 1px solid transparent; color: var(--faint); border-radius: 8px;
+  padding: 6px 9px; font-size: 12px; flex-shrink: 0; line-height: 1; align-self: flex-start;
+  transition: color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.dismiss:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); box-shadow: 0 0 10px -4px var(--glow-danger) }
+
+.card.running { --edge: var(--accent); --edge-glow: var(--glow-accent); overflow: hidden }
+.card.running::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--accent); box-shadow: 0 0 12px 2px var(--glow-accent);
+  animation: breathe 1.6s var(--ease) infinite;
+}
+@keyframes breathe { 0%, 100% { opacity: .3 } 50% { opacity: 1 } }
+.card.running::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -90px; width: 70px;
+  background: linear-gradient(100deg, transparent,
+    color-mix(in srgb, var(--accent) 7%, transparent) 45%,
+    color-mix(in srgb, var(--accent) 13%, transparent) 50%,
+    color-mix(in srgb, var(--accent) 7%, transparent) 55%, transparent);
+  transform: translateX(0) skewX(-12deg); pointer-events: none;
+  animation: sweep 2.6s linear infinite;
+}
+@keyframes sweep { to { transform: translateX(760px) skewX(-12deg) } }
+.card.ok { --edge: var(--ok); --edge-glow: var(--glow-ok) }
+.card.warn { --edge: var(--warn); --edge-glow: var(--glow-warn) }
+.card.fail { --edge: var(--danger); --edge-glow: var(--glow-danger) }
+
+.log {
+  display: none; margin-top: 12px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--muted);
+  max-height: 230px; overflow: auto;
+  background: linear-gradient(180deg, var(--log-hi), var(--log-lo));
+  border: 1px solid rgba(125, 138, 160, .12); border-radius: var(--r-sm); padding: 10px 12px;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 14px);
+  mask-image: linear-gradient(180deg, transparent 0, #000 14px);
+  scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.log::-webkit-scrollbar { width: 8px }
+.log::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 4px }
+.log::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--accent) 45%, transparent) }
+.card.running .log, .card.has-log .log { display: block }
+.log .line { white-space: pre-wrap; word-break: break-word }
+.log .status { color: var(--text) }
+.log .agent { color: var(--muted) }
+.result { margin-top: 11px; font-size: 12.5px; display: none }
+.card.ok .result, .card.warn .result, .card.fail .result { display: block }
+.result .k { font-family: var(--mono); font-size: 11px; color: var(--faint) }
+.card.ok .result .v { color: var(--ok) }
+.card.warn .result .v { color: var(--warn) }
+.card.fail .result .v { color: var(--danger) }
+
+.empty {
+  border: 1px solid rgba(125, 138, 160, .12); border-radius: var(--r); padding: 26px 16px;
+  color: var(--faint); font-size: 13px; text-align: center;
+  background: radial-gradient(120% 90% at 50% 0%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 65%);
+  box-shadow: inset 0 0 40px color-mix(in srgb, var(--accent) 3%, transparent);
+}
+.empty::before {
+  content: "✦"; display: block; font-size: 18px; margin-bottom: 8px;
+  color: color-mix(in srgb, var(--accent) 45%, transparent); text-shadow: 0 0 12px var(--glow-accent);
+}
+.empty code { font-family: var(--mono); color: var(--muted) }
+
+/* card flash — "Show task" from the galaxy menu lands here */
+.card.flash { animation: card-flash .9s var(--ease) 2 }
+@keyframes card-flash {
+  50% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 70%, transparent), 0 0 26px -6px var(--glow-accent);
+    transform: translateY(-2px);
+  }
+}

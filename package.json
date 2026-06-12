@@ -1,0 +1,15 @@
+{
+  "name": "workloop",
+  "version": "0.6.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Zero-dependency local mission control for any repo: scan it into task cards, run a headless Claude Code fix loop per card, and watch it all live on a galaxy map of your codebase.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "scan": "node scanner.mjs"
+  }
+}

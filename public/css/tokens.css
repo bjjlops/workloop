@@ -1,0 +1,150 @@
+/* tokens.css — the design-token contract for every theme.
+   :root IS the Mission Control theme (the original look, value-for-value).
+   Other themes override these in themes.css via html[data-theme="…"] blocks.
+   The galaxy canvas reads the --pal-* / --viz-* tokens through
+   theme.js → readThemeFromCSS() → RepoViz.retheme(). */
+
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg0: #10131a;
+  --bg1: #1a1f28;
+  --bg2: #222834;
+  --line: #2b3140;
+  --line-hi: rgba(148, 163, 184, .16);
+  --glass: rgba(20, 23, 28, .93);      /* tooltips, legends, popovers */
+  --glass-soft: rgba(20, 23, 28, .78); /* ticker chips */
+  --glass-hi: rgba(34, 40, 52, .66);   /* ops/HUD glass gradient top */
+  --glass-lo: rgba(24, 29, 38, .6);    /*                      bottom */
+  --panel-hi: rgba(34, 40, 52, .85);   /* panel/drawer glass */
+  --panel-lo: rgba(24, 29, 38, .92);
+  --card-hi: #1d232d;                  /* task card gradient */
+  --card-lo: #181d25;
+  --log-hi: #0e1218;                   /* inset log wells */
+  --log-lo: #10141c;
+  --devlog-hi: #1f2530;                /* floating log popover */
+  --devlog-lo: #171c24;
+  --select-bg: rgba(16, 19, 26, .8);
+
+  /* text */
+  --text: #e8ecf2;
+  --heading: #f2f5f9;
+  --muted: #8c95a3;
+  --faint: #5c6470;
+
+  /* accent family */
+  --accent: #4fd1c5;
+  --accent-bright: #7ee8de;
+  --accent-2: #5e8fe6;
+  --accent-ice: #b5ecf5;
+
+  /* status */
+  --ok: #3fb66e;
+  --warn: #e0a33e;
+  --danger: #e0614b;
+
+  /* glows */
+  --glow-accent: rgba(79, 209, 197, .35);
+  --glow-ok: rgba(63, 182, 110, .30);
+  --glow-warn: rgba(224, 163, 62, .30);
+  --glow-danger: rgba(224, 97, 75, .35);
+
+  /* chrome recipes */
+  --page-bg:
+    radial-gradient(1100px 620px at 16% -10%, rgba(79, 209, 197, .07), transparent 60%),
+    radial-gradient(900px 700px at 88% -5%, rgba(94, 143, 230, .05), transparent 55%),
+    radial-gradient(140% 90% at 50% 118%, rgba(8, 10, 14, .85), transparent 60%),
+    var(--bg0);
+  --grid-dot: rgba(140, 149, 163, .055);
+  --grid-size: 22px;
+  --aurora-gradient: linear-gradient(90deg, transparent, var(--accent) 30%, var(--accent-2) 55%, var(--warn) 78%, transparent);
+  --viz-bg: radial-gradient(ellipse at 50% 45%, #1d222b, var(--bg0) 78%);
+  --scrollbar-thumb: color-mix(in srgb, var(--accent) 30%, transparent);
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%238c95a3'/%3E%3C/svg%3E");
+  --elev-1: inset 0 1px 0 rgba(255, 255, 255, .04), 0 1px 2px rgba(0, 0, 0, .35), 0 8px 24px -14px rgba(0, 0, 0, .55);
+  --elev-2: inset 0 1px 0 rgba(255, 255, 255, .05), 0 2px 4px rgba(0, 0, 0, .35), 0 16px 40px -16px rgba(0, 0, 0, .6);
+
+  /* structure (rarely themed) */
+  --r: 12px;
+  --r-sm: 8px;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+  --ease: cubic-bezier(.22, 1, .36, 1);
+  --t-fast: 150ms;
+  --t-med: 250ms;
+  --t-slow: 400ms;
+
+  /* ambient effect id, read by ambient.js (CSS-only ambients are styled in themes.css) */
+  --ambient: aurora-line;
+
+  /* galaxy palette — board badges and the canvas share these */
+  --pal-dir: #4fd1c5;
+  --pal-ts: #8ab4ff;
+  --pal-tsx: #5e8fe6;
+  --pal-js: #e6cf6f;
+  --pal-jsx: #cdb45c;
+  --pal-script: #3fb66e;
+  --pal-data: #e0a33e;
+  --pal-style: #c08bff;
+  --pal-markup: #e0614b;
+  --pal-docs: #8c95a3;
+  --pal-sql: #d678b6;
+  --pal-image: #5dbb8f;
+  --pal-config: #7d8aa0;
+  --pal-native: #d98a68;
+  --pal-other: #5c6470;
+
+  /* galaxy canvas tokens */
+  --viz-link: #565f6e;
+  --viz-label-dir: #c7d2d0;
+  --viz-label-file: rgba(150, 159, 173, .95);
+  --viz-label-halo: rgba(20, 23, 28, .85);
+  --viz-heat-0: #ecb24c; /* recent → */
+  --viz-heat-1: #c48642;
+  --viz-heat-2: #786a58;
+  --viz-heat-3: #4a5260;
+  --viz-heat-4: #343b47; /* → old */
+  --viz-heat-empty: #3a4150;
+  --viz-changed: var(--warn);
+  --viz-deleted: var(--danger);
+  --viz-success: var(--ok);
+  --viz-success-bright: #7ee2a8;
+  --viz-comet: var(--warn);
+  --viz-comet-head: #e8c069;
+  --viz-fx-composite: lighter;
+  --viz-fx-alpha: 1;
+
+  /* galaxy scenery — the atmosphere layer (VizScenery). Every theme retints
+     these; quality gating happens in JS via the Quality dial. */
+  --viz-neb-1: #5e8fe6;      /* nebula gas colors, mixed additively */
+  --viz-neb-2: #4fd1c5;
+  --viz-neb-3: #2b3a6e;
+  --viz-neb-alpha: .16;      /* 0 turns nebulae off for a theme */
+  --viz-star-1: #cdd6e4;     /* near starfield layer */
+  --viz-star-2: #7f8aa0;     /* far starfield layer */
+  --viz-star-density: 1;     /* 0–2 × multiplier */
+  --viz-spike: #dff7f4;      /* diffraction spike tint */
+  --viz-spike-alpha: .5;
+  --viz-ring: #4fd1c5;       /* orbital guide rings on the layout radii */
+  --viz-ring-alpha: .07;
+  --viz-core: #ffffff;       /* white-hot node cores + the root star */
+  --viz-node-shape: circle;  /* circle | star | spark | flake | glyph | diamond | square | petal | drop | gem */
+  --viz-atmo: none;          /* CSS-only stage overlay (gradients), painted above the canvases */
+  --viz-vig: rgba(4, 6, 10, .55); /* vignette ring around the stage */
+
+  /* legacy aliases — component CSS written against the original names keeps working */
+  --ink: var(--bg0);
+  --surface: var(--bg1);
+  --surface-2: var(--bg2);
+  --teal: var(--accent);
+  --teal-bright: var(--accent-bright);
+  --ice: var(--accent-ice);
+  --green: var(--ok);
+  --amber: var(--warn);
+  --red: var(--danger);
+  --glow-teal: var(--glow-accent);
+  --glow-green: var(--glow-ok);
+  --glow-amber: var(--glow-warn);
+  --glow-red: var(--glow-danger);
+}

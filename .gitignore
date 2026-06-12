@@ -1,0 +1,13 @@
+# local state — every install regenerates these
+.workloop/
+workloop.config.json
+
+# editor / agent scratch
+.claude/
+
+# os + tooling noise
+.DS_Store
+node_modules/
+*.log
+.env
+.env.*
