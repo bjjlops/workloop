@@ -42,8 +42,12 @@ const Bus = (() => {
     // EventSource reconnects automatically (server sends retry: 3000)
   }
 
-  on('run.start', (ev) => syncRun(ev.data || { taskId: '?' }));
-  on('run.done', (ev) => syncRun(null, ev.data ? !!ev.data.ok : null));
+  // the ring PERSISTS across restarts now — replayed historical run events
+  // must not flip run state (and fire the galaxy run animations) on every
+  // page load; a reload that lands mid-run re-syncs from the hello snapshot
+  const live = (ev) => !ev?.ts || Date.now() - ev.ts < 15000;
+  on('run.start', (ev) => { if (live(ev)) syncRun(ev.data || { taskId: '?' }); });
+  on('run.done', (ev) => { if (live(ev)) syncRun(null, ev.data ? !!ev.data.ok : null); });
   on('run.file', (ev) => { // live read/edit attribution for the galaxy trails
     if (!state.running || !ev.data?.path) return; // ring replays of finished runs stay inert
     RepoViz.fileActivity?.(ev.data.path, ev.data.op);

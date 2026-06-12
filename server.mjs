@@ -2,7 +2,7 @@
 // server.mjs — zero-dependency local server for the work-loop dashboard.
 
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, existsSync, lstatSync, readdirSync, chmodSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, lstatSync, readdirSync, chmodSync, openSync, readSync, closeSync, unlinkSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -11,10 +11,11 @@ import { dirname, extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { childEnv, claudeInfo, loginPath, resolveClaude, splitCommand } from './env.mjs';
 import * as Platform from './platform.mjs';
-import { attach as busAttach, bootId, publish, publishLine, recent as busRecent } from './bus.mjs';
+import { attach as busAttach, bootId, flushEventsSync, publish, publishForeign, publishLine, recent as busRecent } from './bus.mjs';
 import * as Chat from './chat.mjs';
 import * as Handoffs from './handoffs.mjs';
 import * as Commands from './commands.mjs';
+import { recordWrite, watchFile, unwatchFile, writeJsonAtomic } from './watch.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 4317;
@@ -46,6 +47,15 @@ let pickerBusy = false;  // one native folder dialog at a time
 let activeRuns = 0;      // git operations are blocked while an agent is working
 let currentRun = null;   // { taskId, title, file } while a run is live — feeds the bus hello snapshot
 let runnerChild = null;  // the live runner.mjs child, killed on server shutdown
+
+// last run's outcome — persisted so the copilot's snapshot can answer "how
+// did the last run go" after a restart, and shared so both instances agree
+const lastRunPath = join(__dirname, '.workloop', 'lastrun.json');
+let lastRun = (() => { try { return JSON.parse(readFileSync(lastRunPath, 'utf8')); } catch { return null; } })();
+function setLastRun(r) {
+  lastRun = { ...r, at: Date.now(), src: String(PORT) };
+  writeJsonAtomic(lastRunPath, lastRun);
+}
 
 // Configs written by older versions lack newer keys (chat, ui, commands, …) —
 // always read through the defaults so every access site sees a full shape.
@@ -100,12 +110,63 @@ function loginState() {
   } catch { return null; } // unknown — don't claim either way
 }
 
+// gh CLI detection for the Connections panel — cached and refreshed in the
+// BACKGROUND. /api/status is polled every 4s (fresh=1) during the login watch,
+// so a synchronous spawn here would pile up; callers always get the cached
+// value immediately ({found: null} only before the first probe settles).
+let ghCache = { at: 0, found: null, version: null, busy: false };
+const GH_TTL = 5 * 60 * 1000;
+function ghInfo(fresh) {
+  const stale = Date.now() - ghCache.at > GH_TTL;
+  if (!ghCache.busy && (stale || (fresh && Date.now() - ghCache.at > 30000))) {
+    ghCache.busy = true;
+    gitInAsync(__dirname, ['--version'], { bin: 'gh', timeout: 8000 }).then((r) => {
+      ghCache = {
+        at: Date.now(), busy: false,
+        found: r.errorCode === 'ENOENT' ? false : r.status === 0,
+        version: r.status === 0 ? (r.stdout.trim().split('\n')[0] || null) : null,
+      };
+    });
+  }
+  return { found: ghCache.found, version: ghCache.version };
+}
+
+// verifierStatus: which verifier commands are configured AND runnable — same
+// rule the scanner applies (npm script must exist; npm's placeholder test
+// script counts as missing), so the Connections row never disagrees with
+// what a scan would actually do.
+function verifierStatus(cfg) {
+  let scripts = null;
+  try { scripts = JSON.parse(readFileSync(join(cfg.repoPath, 'package.json'), 'utf8')).scripts || {}; }
+  catch { /* no package.json — non-npm commands may still be runnable */ }
+  const check = (cmd) => {
+    cmd = (cmd || '').trim();
+    if (!cmd) return { cmd: null, runnable: null };
+    const m = cmd.match(/^npm\s+(?:run\s+)?([\w:.-]+)/);
+    if (m && scripts) {
+      const s = scripts[m[1]];
+      if (!s || (m[1] === 'test' && /no test specified/i.test(s))) return { cmd, runnable: false, missing: m[1] };
+    }
+    return { cmd, runnable: true };
+  };
+  return {
+    typecheck: check(cfg.verifier?.typecheck), test: check(cfg.verifier?.test),
+    lint: check(cfg.verifier?.lint), build: check(cfg.verifier?.build),
+  };
+}
+
 // Async scan: a spawnSync scanner froze the whole event loop (SSE included)
 // for the duration of a scan. One shared in-flight promise also dedupes
 // concurrent scan requests.
 let scanInFlight = null;
 function runScannerAsync(reason) {
   if (scanInFlight) return scanInFlight;
+  // verifier commands must not run while the OTHER instance's agent edits the tree
+  const fl = foreignRunLock();
+  if (fl) {
+    publish('scan.done', `scan skipped — a run is active in the other Workloop instance (:${fl.port})`);
+    return Promise.resolve('');
+  }
   publish('scan.start', 'scanning repo' + (reason ? ` (${reason})` : ''));
   scanInFlight = new Promise((done) => {
     let out = '', finished = false;
@@ -113,6 +174,9 @@ function runScannerAsync(reason) {
       if (finished) return;
       finished = true;
       scanInFlight = null;
+      // the scanner (a child process) wrote tasks.json — claim it as our own
+      // write so the file watcher doesn't re-publish it as an external change
+      try { recordWrite(tasksPath, readFileSync(tasksPath, 'utf8')); } catch { /* no tasks yet */ }
       const t = readTasks();
       const c = t.meta?.counts || { needsWork: 0, shouldImplement: 0 };
       publish('scan.done', failNote || `scan complete — ${c.needsWork} to fix · ${c.shouldImplement} queued`,
@@ -128,6 +192,19 @@ function runScannerAsync(reason) {
     sc.on('error', () => finish('scan failed'));
   });
   return scanInFlight;
+}
+
+// Post-run rescan lives on the SERVER so every tab and the other instance
+// re-syncs via scan.done — the old client-side scan never happened when the
+// initiating tab closed mid-run. The 1.2s delay + activeRuns check means a
+// Run-all batch (next run starts within ~100ms of the previous end) produces
+// exactly one scan, after the final run.
+let postRunScanTimer = null;
+function scheduleScanAfterRun() {
+  clearTimeout(postRunScanTimer);
+  postRunScanTimer = setTimeout(() => {
+    if (activeRuns === 0 && !Commands.running() && !scanInFlight) runScannerAsync('post-run');
+  }, 1200);
 }
 
 function gitInfo(repoPath) {
@@ -462,6 +539,7 @@ function shutdown() {
   Chat.shutdown();
   Commands.shutdown();
   if (runnerChild) { try { runnerChild.kill('SIGTERM'); } catch { /* gone */ } }
+  flushEventsSync(); // pending activity lines must land before we vanish
   process.exit(0);
 }
 process.on('SIGINT', shutdown);
@@ -523,7 +601,7 @@ function queueGoals(cfg, titles) {
     cur += `- [ ] ${clean}\n`;
     open.add(clean);
   }
-  if (queued.length) writeFileSync(file, cur);
+  if (queued.length) { writeFileSync(file, cur); recordWrite(file, cur); }
   return { rel, queued, dup };
 }
 
@@ -552,7 +630,7 @@ function boardAddBacklog(cfg, rel, queued) {
     shouldImplement: state.tasks.filter((t) => t.column === 'should-implement').length,
   };
   state.meta.generatedAt = new Date().toISOString(); // bump so the client's render dedup re-renders
-  writeFileSync(tasksPath, JSON.stringify(state, null, 2));
+  writeJsonAtomic(tasksPath, state);
   return state;
 }
 
@@ -580,18 +658,165 @@ function chatContext(cfg) {
   const acts = busRecent(15).filter((e) => !e.kind.startsWith('chat.'))
     .map((e) => `  - ${ago(e.ts)} · ${e.kind} · ${cap(e.message)}`);
   const genAt = Date.parse(t.meta?.generatedAt || '') || 0;
+  const bySource = {};
+  for (const x of qd) bySource[x.source] = (bySource[x.source] || 0) + 1;
+  const queueLabel = 'queue' + (qd.length ? ` (${Object.entries(bySource).map(([k, n]) => `${k} ${n}`).join(', ')})` : '');
+  const lastRunLine = lastRun
+    ? `${lastRun.ok ? 'ok' : 'needs you'} — "${cap(lastRun.title)}"${lastRun.branch ? ` · ${lastRun.branch}` : ''}${!lastRun.ok && lastRun.reason ? ` · ${cap(lastRun.reason, 100)}` : ''} · ${ago(lastRun.at)}`
+    : 'none yet';
   return [
     'WORKSPACE STATE (live, regenerated for this turn — supersedes anything earlier in the conversation):',
     `repo: ${cfg.repoPath} · branch: ${g.branch || '?'} · ${g.dirty ? 'uncommitted changes' : 'clean tree'}`,
     `agent run: ${currentRun ? `ACTIVE — "${currentRun.title}"${currentRun.file ? ` (${currentRun.file})` : ''}` : 'none active'}`,
+    `last run: ${lastRunLine}`,
     `dev server: ${devRunning() ? 'running' + (dev.url ? ` — ${dev.url}` : '') : 'not running'}`,
     `task board: ${genAt ? `updated ${ago(genAt)}` : 'not scanned yet'}`,
     sect('needs work', nw.slice(0, 8).map(item), counts.needsWork),
-    sect('queue', qd.slice(0, 8).map(item), counts.shouldImplement),
-    sect('open handoffs', open.slice(0, 6).map((h) => `  - [${h.source}] ${cap(h.title)}`), open.length),
+    sect(queueLabel, qd.slice(0, 8).map(item), counts.shouldImplement),
+    sect('open handoffs', open.slice(0, 6).map((h) => `  - [${h.source}] ${cap(h.title)}${h.steps?.[0] ? ` — next: ${cap(h.steps[0], 80)}` : ''}`), open.length),
     `recent activity (oldest first):${acts.length ? '\n' + acts.join('\n') : ' none yet'}`,
   ].join('\n');
 }
+
+// ---------- cross-instance / external state sync ----------
+// Two Workloop instances (e.g. :4317 and a :4321 preview) share this folder's
+// .workloop/ state and the repo's backlog file. fs.watch + content hashing
+// (watch.mjs) turn the other instance's writes — and hand-edits in any
+// editor — into bus events, so every panel follows no matter who wrote.
+const eventsPath = join(__dirname, '.workloop', 'events.jsonl');
+let evOffset = (() => { try { return lstatSync(eventsPath).size; } catch { return 0; } })();
+
+// tail the shared activity log: new lines appended by the OTHER instance are
+// re-broadcast here (publishForeign never re-persists — no ping-pong).
+function tailForeignEvents(abs) {
+  let st;
+  try { st = lstatSync(abs); } catch { return; }
+  if (st.size < evOffset) { evOffset = st.size; return; } // other instance compacted at boot — skip to EOF
+  if (st.size === evOffset) return;
+  const buf = Buffer.alloc(st.size - evOffset);
+  try { const fd = openSync(abs, 'r'); readSync(fd, buf, 0, buf.length, evOffset); closeSync(fd); }
+  catch { return; }
+  const nl = buf.lastIndexOf(0x0a);
+  if (nl < 0) return; // torn line mid-append — wait for the rest
+  evOffset += nl + 1;
+  for (const line of buf.subarray(0, nl).toString('utf8').split('\n')) {
+    if (!line.trim()) continue;
+    let ev; try { ev = JSON.parse(line); } catch { continue; }
+    if (String(ev.src) === String(PORT)) continue; // our own append
+    publishForeign(ev);
+  }
+}
+
+// syncBacklogIntoTasks: surgical backlog→board merge for EXTERNAL backlog
+// edits (hand-edits, the other instance, the runner's check-off). Re-derives
+// the backlog cards exactly as the scanner would — same ids: 0-based line +
+// the RAW capture (scanner.mjs) — and leaves every other card untouched, so
+// an outside edit reaches the board without paying for a verifier scan.
+function syncBacklogIntoTasks(cfg, content) {
+  const state = readTasks();
+  if (state.meta?.repo !== cfg.repoPath) return null; // board belongs to another repo — a real scan owns this
+  const sid = (...p) => createHash('sha1').update(p.join('|')).digest('hex').slice(0, 8);
+  const rel = cfg.sources?.backlog || 'BACKLOG.md';
+  const next = [];
+  String(content || '').split('\n').forEach((ln, i) => {
+    const m = ln.match(/^\s*[-*]\s+\[ \]\s+(.*)$/);
+    if (m && m[1].trim()) next.push({
+      id: sid('backlog', String(i), m[1]), source: 'backlog', column: 'should-implement',
+      title: m[1].trim(), file: rel, line: i + 1,
+      detail: `From ${rel}`, verifiable: false, verifyCmd: null,
+    });
+  });
+  const cur = (state.tasks || []).filter((t) => t.source === 'backlog');
+  if (JSON.stringify(cur) === JSON.stringify(next)) return null; // no effective change
+  state.tasks = [...(state.tasks || []).filter((t) => t.source !== 'backlog'), ...next];
+  state.meta.counts = {
+    needsWork: state.tasks.filter((t) => t.column === 'needs-work').length,
+    shouldImplement: state.tasks.filter((t) => t.column === 'should-implement').length,
+  };
+  state.meta.generatedAt = new Date().toISOString();
+  writeJsonAtomic(tasksPath, state);
+  return state;
+}
+
+let armedBacklog = null; // abs path of the backlog file currently watched — re-armed on repo switch
+function armBacklogWatch(cfg) {
+  const rp = cfg.repoPath;
+  if (!rp || rp.startsWith('/ABSOLUTE') || !existsSync(rp)) return;
+  const file = join(rp, cfg.sources?.backlog || 'BACKLOG.md');
+  if (armedBacklog === file) return;
+  if (armedBacklog) unwatchFile(armedBacklog);
+  armedBacklog = file;
+  try { recordWrite(file, readFileSync(file, 'utf8')); } catch { /* not created yet */ }
+  watchFile(file, 'text', (content, again) => {
+    if (activeRuns > 0) return again(2000); // the runner may be mid check-off — reconcile right after the run
+    const live = readCfg();
+    const st = syncBacklogIntoTasks(live, content);
+    if (st) {
+      publish('task.synced', `backlog updated externally — ${st.meta.counts.shouldImplement} queued`,
+        { counts: st.meta.counts, source: 'backlog' });
+    }
+  });
+}
+
+function initStateWatchers() {
+  const hfPath = join(__dirname, '.workloop', 'handoffs.json');
+  const chatPath = join(__dirname, '.workloop', 'chat.json');
+  // prime the self-write hashes with current disk content so a no-op fs event
+  // (touch, double-fire) never re-publishes state nobody changed
+  for (const p of [tasksPath, hfPath, chatPath, lastRunPath, cfgPath]) {
+    try { recordWrite(p, readFileSync(p, 'utf8')); } catch { /* absent */ }
+  }
+  watchFile(tasksPath, 'json', (data) => {
+    // never rescan from here — reactions to tasks.json must not write tasks.json
+    const c = data?.meta?.counts || { needsWork: 0, shouldImplement: 0 };
+    publish('task.synced', `task board updated externally — ${c.needsWork} to fix · ${c.shouldImplement} queued`,
+      { counts: c, source: 'tasks' });
+  });
+  watchFile(hfPath, 'json', (data) => {
+    const open = Handoffs.reload(data);
+    publish('handoff.changed', `handoffs updated externally — ${open} open`, { open });
+  });
+  watchFile(chatPath, 'json', (data, again) => {
+    if (Chat.busy()) return again(2000); // never clobber an in-flight turn's session
+    Chat.reload(data);
+    publish('chat.changed', 'chat updated externally', { messages: (data?.messages || []).length });
+  });
+  watchFile(lastRunPath, 'json', (data) => { if (data && typeof data === 'object') lastRun = data; });
+  watchFile(eventsPath, 'raw', tailForeignEvents);
+  watchFile(cfgPath, 'json', (data) => {
+    const cfg = mergeCfg(DEFAULT_CFG, data || {});
+    const before = armedBacklog;
+    armBacklogWatch(cfg);
+    publish('config.changed', 'settings changed externally', { repoPath: cfg.repoPath, repoSwitched: armedBacklog !== before });
+  });
+  armBacklogWatch(readCfg());
+}
+
+// ---------- cross-instance run lock ----------
+// activeRuns is per-process; two instances on the same checkout could each
+// start an agent and fight over the tree. A lock file in the shared .workloop/
+// extends the single-writer rule across processes (pid = the runner child, so
+// a crashed server's orphan still holds the lock until it actually dies).
+const runLockPath = join(__dirname, '.workloop', 'run.lock');
+function foreignRunLock() {
+  let l;
+  try { l = JSON.parse(readFileSync(runLockPath, 'utf8')); } catch { return null; }
+  if (!l || String(l.port) === String(PORT)) return null; // ours — activeRuns governs
+  const stale = Date.now() - (l.at || 0) > 30 * 60 * 1000;
+  let alive = false;
+  if (!stale && l.pid) { try { process.kill(l.pid, 0); alive = true; } catch { /* dead */ } }
+  if (!alive) { try { unlinkSync(runLockPath); } catch { /* raced */ } return null; }
+  return l;
+}
+const writeRunLock = (taskId, pid) => {
+  try { writeFileSync(runLockPath, JSON.stringify({ pid, port: String(PORT), taskId, at: Date.now() })); } catch { /* best-effort */ }
+};
+const clearRunLock = () => {
+  try {
+    const l = JSON.parse(readFileSync(runLockPath, 'utf8'));
+    if (String(l.port) === String(PORT)) unlinkSync(runLockPath);
+  } catch { /* gone */ }
+};
 
 // ---------- http ----------
 const server = createServer(async (req, res) => {
@@ -716,6 +941,8 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/api/scan') {
     if (activeRuns > 0) return json(res, 409, { error: 'an agent run is active — rescan after it finishes' });
+    const fl = foreignRunLock();
+    if (fl) return json(res, 409, { error: `a run is active in the other Workloop instance (:${fl.port}) — rescan after it finishes` });
     const scanLog = await runScannerAsync();
     return json(res, 200, { ...readTasks(), scanLog });
   }
@@ -724,10 +951,24 @@ const server = createServer(async (req, res) => {
     const fresh = url.searchParams.get('fresh') === '1';
     if (fresh) loginPath(true);
     const cfg = readCfg();
+    const repo = gitInfo(cfg.repoPath);
+    // Connections-panel extras: everything below is fs reads, in-memory state,
+    // or one cheap local git call — NEVER a new synchronous tool spawn (this
+    // endpoint is polled every 4s with fresh=1 during the login watch).
+    const remote = repo.git ? ((gitIn(cfg.repoPath, ['remote', 'get-url', 'origin']).stdout || '').trim() || null) : null;
+    const backlogRel = cfg.sources?.backlog || 'BACKLOG.md';
+    const { last: _devLines, ...devSlim } = devStatus();
+    const chatHist = Chat.history();
     return json(res, 200, {
       node: process.version,
       claude: { ...claudeInfo(cfg.agent?.command || 'claude', fresh), signedIn: loginState() },
-      repo: gitInfo(cfg.repoPath),
+      repo,
+      remote,
+      gh: ghInfo(fresh),
+      verifier: verifierStatus(cfg),
+      backlog: { rel: backlogRel, exists: repo.exists ? existsSync(join(cfg.repoPath, backlogRel)) : false },
+      dev: devSlim,
+      chat: { active: !!chatHist.sessionId, startedAt: chatHist.startedAt || null, messages: (chatHist.messages || []).length },
       openPR: !!cfg.openPR,
       port: PORT,
     });
@@ -769,7 +1010,10 @@ const server = createServer(async (req, res) => {
       publish('chat.reset', 'chat reset — repo changed');
       publish('repo.switch', `repo → ${patch.repoPath}`, { repoPath: patch.repoPath, previous: prev.repoPath });
     }
-    writeFileSync(cfgPath, JSON.stringify(next, null, 2));
+    const cfgBody = JSON.stringify(next, null, 2);
+    writeFileSync(cfgPath, cfgBody);
+    recordWrite(cfgPath, cfgBody); // our own save — the config watcher must not re-publish it
+    if (switching) armBacklogWatch(next); // the backlog file moved with the repo
     publish('config.saved', 'settings saved', { keys: Object.keys(patch || {}) });
     return json(res, 200, next);
   }
@@ -834,7 +1078,12 @@ const server = createServer(async (req, res) => {
         const lines = readFileSync(file, 'utf8').split('\n');
         const matches = (l) => { const m = (l || '').match(/^\s*[-*]\s+\[ \]\s+(.*)$/); return !!m && m[1].trim() === task.title; };
         const i = (task.line && matches(lines[task.line - 1])) ? task.line - 1 : lines.findIndex(matches);
-        if (i >= 0) { lines.splice(i, 1); writeFileSync(file, lines.join('\n')); }
+        if (i >= 0) {
+          lines.splice(i, 1);
+          const body = lines.join('\n');
+          writeFileSync(file, body);
+          recordWrite(file, body);
+        }
       } catch { /* backlog file missing — nothing to remove */ }
     } else {
       // TODO/FIXME comments stay in the code — just hide them from future scans
@@ -842,7 +1091,7 @@ const server = createServer(async (req, res) => {
       let dismissed = [];
       try { dismissed = JSON.parse(readFileSync(dismissedPath, 'utf8')); } catch { /* none yet */ }
       dismissed.push({ file: task.file, title: task.title, at: new Date().toISOString() });
-      writeFileSync(dismissedPath, JSON.stringify(dismissed, null, 2));
+      writeJsonAtomic(dismissedPath, dismissed);
     }
     // surgical board update — no expensive verifier re-scan for a dismiss
     state.tasks = state.tasks.filter((t) => t.id !== id);
@@ -851,7 +1100,7 @@ const server = createServer(async (req, res) => {
       shouldImplement: state.tasks.filter((t) => t.column === 'should-implement').length,
     };
     state.meta.generatedAt = new Date().toISOString(); // bump so the client's render dedup re-renders
-    writeFileSync(tasksPath, JSON.stringify(state, null, 2));
+    writeJsonAtomic(tasksPath, state);
     publish('task.discard', `discarded — ${task.title}`, { id });
     return json(res, 200, state);
   }
@@ -1060,11 +1309,13 @@ const server = createServer(async (req, res) => {
     const id = url.searchParams.get('id') || '';
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.write('retry: 10000\n\n');
-    if (activeRuns > 0 || Commands.running() || Chat.busyWriting()) { // one writer at a time — they'd fight over the tree
+    const foreign = foreignRunLock(); // the OTHER instance shares this checkout — one writer across processes
+    if (activeRuns > 0 || Commands.running() || Chat.busyWriting() || foreign) { // one writer at a time — they'd fight over the tree
       publish('run.blocked', 'run blocked — another writer is active', { taskId: id });
       const reason = activeRuns > 0 ? 'another run is already active — wait for it to finish, then Retry'
         : Commands.running() ? 'a saved command is running — wait for it to finish, then Retry'
-          : 'a write-capable chat turn is active — wait for it to finish, then Retry';
+          : Chat.busyWriting() ? 'a write-capable chat turn is active — wait for it to finish, then Retry'
+            : `a run is active in the other Workloop instance (:${foreign.port}) — wait for it, then Retry`;
       res.write(`data: ${JSON.stringify({ type: 'done', ok: false, reason })}\n\n`);
       res.write('event: end\ndata: {}\n\n');
       return res.end();
@@ -1074,6 +1325,7 @@ const server = createServer(async (req, res) => {
     activeRuns++;
     runnerChild = child;
     currentRun = { taskId: id, title: task?.title || id, file: task?.file || null };
+    writeRunLock(id, child.pid);
     publish('run.start', `run started — ${currentRun.title}`, currentRun);
     let doneSeen = false;
     const mirror = (line) => { // additive bus tap — the per-run SSE stream is untouched
@@ -1087,6 +1339,7 @@ const server = createServer(async (req, res) => {
         publish('run.done',
           o.ok ? `run complete — ${currentRun.title}` : `run needs you — ${o.reason || 'stopped'}`,
           { taskId: id, ok: !!o.ok, reason: o.reason, branch: o.branch, pr: o.pr, note: o.note });
+        setLastRun({ taskId: id, title: currentRun?.title || id, ok: !!o.ok, reason: o.reason || null, branch: o.branch || null, pr: o.pr || null, note: o.note || null });
         if (!o.ok) Handoffs.fromRunFailure(id, currentRun?.title || id, o.reason, o.branch, o.log);
       }
     };
@@ -1105,8 +1358,11 @@ const server = createServer(async (req, res) => {
       if (!doneSeen) { // killed or crashed before its done line
         doneSeen = true;
         publish('run.done', `run ended — ${currentRun?.title || id}`, { taskId: id, ok: false, reason: 'runner exited unexpectedly' });
+        setLastRun({ taskId: id, title: currentRun?.title || id, ok: false, reason: 'runner exited unexpectedly', branch: null, pr: null, note: null });
       }
       currentRun = null;
+      clearRunLock();
+      scheduleScanAfterRun(); // every tab re-syncs via scan.done — not just the one that clicked Run
       res.write('event: end\ndata: {}\n\n');
       res.end();
     });
@@ -1130,6 +1386,8 @@ server.listen(PORT, () => {
   const cfg = readCfg();
   console.log(`\n  WORKLOOP  ->  http://localhost:${PORT}`);
   publish('server.start', 'workloop online', { bootId, port: PORT });
+  ghInfo(false); // pre-warm the gh probe so the Connections row is settled by first paint
+  initStateWatchers(); // cross-instance/external sync — after boot state is loaded
   if (cfg.repoPath && !cfg.repoPath.startsWith('/ABSOLUTE') && existsSync(cfg.repoPath)) {
     console.log(`  repo: ${cfg.repoPath}`);
     runScannerAsync('boot').then(() => console.log('  initial scan complete'));

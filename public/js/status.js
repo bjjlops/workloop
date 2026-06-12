@@ -36,8 +36,83 @@ function renderStatus(s) {
   } else {
     dr.className = 'dot bad'; tr.textContent = 'repo: not set';
     bn.textContent = 'no repo';
-    if (!state.panelAutoOpened) { state.panelAutoOpened = true; openPanel(); }
   }
+  renderConnections(s);
+  // one auto-open per page load: a missing repo outranks a missing sign-in
+  if (!state.panelAutoOpened) {
+    if (!s.repo?.exists) { state.panelAutoOpened = true; openPanel(); }
+    else if (s.claude?.found && s.claude.signedIn === false) {
+      state.panelAutoOpened = true;
+      Drawers.openLeft('sec-status');
+    }
+  }
+}
+
+/* ---- Connections matrix: one row per dependency, dot + message + fix ---- */
+function renderConnections(s) {
+  const box = $('#conn-rows');
+  if (!box) return;
+  const rows = [];
+  const row = (dot, name, msg, act, actLabel) => rows.push({ dot, name, msg, act, actLabel });
+
+  if (s.claude?.found) {
+    row(s.claude.ok === false ? 'warn' : 'ok', 'engine',
+      (s.claude.version || s.claude.path.split('/').slice(-1)[0]) + ' · ' + s.claude.path,
+      s.claude.ok === false ? 'engine' : null, 'Check');
+  } else {
+    row('bad', 'engine', 'claude CLI not found', 'engine', 'Set path');
+  }
+
+  if (!s.claude?.found) row('warn', 'sign in', 'needs the engine CLI first', 'engine', 'Set path');
+  else if (s.claude.signedIn === true) row('ok', 'sign in', 'signed in');
+  else if (s.claude.signedIn === false) row('bad', 'sign in', 'not signed in — runs and copilot need this', 'login', 'Sign in');
+  else row('warn', 'sign in', 'could not verify sign-in state', 'login', 'Sign in');
+
+  if (s.repo?.exists && s.repo.git) row('ok', 'repo', (s.repo.branch || '?') + ' · ' + s.repo.path, 'setup', 'Change');
+  else if (s.repo?.exists) row('warn', 'repo', 'not a git repository — ' + s.repo.path, 'setup', 'Change');
+  else row('bad', 'repo', 'not set', 'setup', 'Set up');
+
+  if (!s.repo?.git) row('off', 'remote', '—');
+  else if (s.remote) row('ok', 'remote', s.remote);
+  else row('warn', 'remote', 'no remote — git remote add origin <url> enables Push & PR');
+
+  if (s.gh?.found === true) row('ok', 'gh cli', s.gh.version || 'installed');
+  else if (s.gh?.found === false) row('warn', 'gh cli', 'not installed — PRs fall back to compare pages (brew install gh)');
+  else row('off', 'gh cli', 'checking…');
+
+  if (!s.repo?.exists) row('off', 'verifier', '— set a repo first');
+  else {
+    const v = s.verifier || {};
+    const set = Object.keys(v).filter((k) => v[k]?.cmd);
+    const broken = set.filter((k) => v[k].runnable === false);
+    if (!set.length) row('warn', 'verifier', 'none configured — fixes land review-only', 'engine', 'Configure');
+    else if (broken.length) row('warn', 'verifier', broken.map((k) => `${k}: missing npm script "${v[k].missing}"`).join(' · '), 'engine', 'Configure');
+    else row('ok', 'verifier', set.join(' · '));
+  }
+
+  if (s.dev?.running) row('ok', 'dev server', 'running' + (s.dev.url ? ' — ' + s.dev.url : ''), 'dev', 'Configure');
+  else if (s.dev?.command) row('off', 'dev server', s.dev.command + ' — not running', 'dev', 'Configure');
+  else row('warn', 'dev server', 'no dev command set', 'dev', 'Configure');
+
+  if (s.backlog?.exists) row('ok', 'backlog', s.backlog.rel);
+  else row('off', 'backlog', (s.backlog?.rel || 'BACKLOG.md') + ' — created on the first queued goal');
+
+  if (s.claude?.found && s.claude.signedIn !== false) {
+    row('ok', 'copilot', s.chat?.messages ? `${s.chat.messages} message${s.chat.messages === 1 ? '' : 's'} this session` : 'fresh session', 'chat', 'Open');
+  } else {
+    row('warn', 'copilot', 'needs the engine signed in', s.claude?.found ? 'login' : 'engine', s.claude?.found ? 'Sign in' : 'Set path');
+  }
+
+  box.innerHTML = rows.map((r) => `
+    <div class="connrow">
+      <span class="dot ${r.dot}"></span><span class="cname">${esc(r.name)}</span>
+      <span class="cmsg" title="${esc(r.msg)}">${esc(r.msg)}</span>
+      ${r.act ? `<button class="linkbtn" data-act="${esc(r.act)}">${esc(r.actLabel || 'Fix')}</button>` : ''}
+    </div>`).join('');
+
+  const issues = rows.filter((r) => r.dot === 'warn' || r.dot === 'bad').length;
+  const sum = $('#conn-sum');
+  if (sum) sum.textContent = issues ? `${issues} issue${issues === 1 ? '' : 's'}` : 'all good';
 }
 
 async function loadGit() {
@@ -85,12 +160,39 @@ setInterval(() => {
   if (!state.running && !state.batch && !document.hidden) loadGit();
 }, 15000);
 
-$('#recheck').addEventListener('click', async () => {
+async function recheckAll() {
   note('rechecking…');
   await loadStatus(true); // fresh=1 re-detects the claude binary + login state
   await loadGit();
   note('');
+}
+$('#recheck').addEventListener('click', recheckAll);
+$('#conn-recheck')?.addEventListener('click', recheckAll);
+
+// connections fix buttons — delegated: the rows re-render on every status load
+$('#conn-rows')?.addEventListener('click', (e) => {
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (!act) return;
+  if (act === 'login') doLogin();
+  else if (act === 'engine') Drawers.openLeft('sec-engine');
+  else if (act === 'setup') openPanel();
+  else if (act === 'dev') Drawers.openLeft('sec-dev');
+  else if (act === 'chat') { Drawers.setOpen('r', true); Drawers.setFolded('chat', false); }
 });
+
+// keep the matrix honest on config/dev/repo changes (debounced — the bus
+// replays its ring on reconnect, so stale events must not re-fetch)
+let connSync = null;
+const connRefresh = (ev) => {
+  if (ev?.ts && Date.now() - ev.ts > 15000) return;
+  clearTimeout(connSync);
+  connSync = setTimeout(() => loadStatus(false), 200);
+};
+Bus.on('config.saved', connRefresh);
+Bus.on('config.changed', connRefresh);
+Bus.on('repo.switch', connRefresh);
+Bus.on('dev.start', connRefresh);
+Bus.on('dev.exit', connRefresh);
 
 $('#btn-newbranch').addEventListener('click', async () => {
   const input = $('#f-newbranch');

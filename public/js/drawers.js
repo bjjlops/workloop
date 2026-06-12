@@ -198,7 +198,7 @@ const Drawers = (() => {
     $('#toggle-right').addEventListener('click', () => toggle('r'));
     $('#toggle-left').addEventListener('click', () => toggle('l'));
     $('#hud-branch').addEventListener('click', () => openLeft('sec-branches'));
-    $('#hud-engine').addEventListener('click', () => openLeft('sec-engine'));
+    $('#hud-engine').addEventListener('click', () => openLeft('sec-status'));
     scrim.addEventListener('click', () => { setOpen('r', false); setOpen('l', false); });
     bindGrip($('#grip-r'), 'r');
     bindGrip($('#grip-l'), 'l');

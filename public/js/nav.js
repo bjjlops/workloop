@@ -308,7 +308,8 @@ const Search = (() => {
     });
     addEventListener('keydown', (e) => { if (e.key === 'Escape' && !pop.hidden) closeMenu(); });
 
-    Bus.on('scan.done', () => setTimeout(() => { // langs refresh after reload
+    Bus.on('scan.done', (ev) => setTimeout(() => { // langs refresh after reload
+      if (ev?.ts && Date.now() - ev.ts > 16000) return; // persisted-ring replay — stale
       renderChips();
       if (focusPath && !Viz.allPaths().some((p) => p === focusPath || p.startsWith(focusPath + '/'))) {
         setFocus(null);

@@ -14,6 +14,15 @@
 // stored in the ring — replay stays a meaningful event history, and the raw
 // lines remain recoverable from the per-run log, /api/dev/status and
 // /api/commands/status buffers.
+//
+// Ring events also persist to .workloop/events.jsonl (append-only NDJSON,
+// shared by both Workloop instances): the activity panel and the copilot's
+// "recent activity" snapshot survive a server restart, and the other
+// instance live-tails our lines (see the events watcher in server.mjs).
+
+import { appendFileSync, appendFile, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const RING_MAX = 500;
 const NO_RING = new Set(['run.agent', 'dev.line', 'cmd.line', 'chat.tool']);
@@ -24,6 +33,77 @@ const clients = new Set();
 let nextId = 1;
 
 export const bootId = Date.now().toString(36);
+
+// ---------- persistence ----------
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const EVENTS_FILE = join(__dirname, '.workloop', 'events.jsonl');
+const SRC = String(process.env.PORT || 4317); // which instance wrote a line — the tail skips its own
+const LOAD_MAX = 200;     // ring seed after a restart
+const COMPACT_OVER = 4000; // boot-only compaction threshold (lines)
+const COMPACT_KEEP = 500;
+
+let pending = [];      // envelopes awaiting the next flush
+let flushTimer = null;
+
+function flushEvents() {
+  flushTimer = null;
+  if (!pending.length) return;
+  const chunk = pending.map((e) => JSON.stringify(e) + '\n').join('');
+  pending = [];
+  appendFile(EVENTS_FILE, chunk, () => { /* best-effort — history, not truth */ });
+}
+
+// shutdown path: the async flush timer won't get to run — drain synchronously
+export function flushEventsSync() {
+  clearTimeout(flushTimer);
+  flushTimer = null;
+  if (!pending.length) return;
+  const chunk = pending.map((e) => JSON.stringify(e) + '\n').join('');
+  pending = [];
+  try { appendFileSync(EVENTS_FILE, chunk); } catch { /* disk said no */ }
+}
+
+function persist(ev) {
+  pending.push({ ts: ev.ts, kind: ev.kind, message: ev.message, ...(ev.data ? { data: ev.data } : {}), src: SRC });
+  if (!flushTimer) flushTimer = setTimeout(flushEvents, 250);
+}
+
+// boot: compact an overgrown log, seed the ring with the recent tail, and
+// repair a run that was cut off by the restart (its replayed run.start would
+// otherwise wedge every client back into run-active state).
+(() => {
+  try { mkdirSync(join(__dirname, '.workloop'), { recursive: true }); } catch { /* exists */ }
+  if (!existsSync(EVENTS_FILE)) return;
+  let lines;
+  try { lines = readFileSync(EVENTS_FILE, 'utf8').split('\n').filter((l) => l.trim()); } catch { return; }
+  if (lines.length > COMPACT_OVER) {
+    lines = lines.slice(-COMPACT_KEEP);
+    try {
+      writeFileSync(EVENTS_FILE + '.tmp', lines.join('\n') + '\n');
+      renameSync(EVENTS_FILE + '.tmp', EVENTS_FILE);
+    } catch { /* keep the long file */ }
+  }
+  const evs = [];
+  for (const l of lines.slice(-LOAD_MAX)) {
+    try {
+      const e = JSON.parse(l);
+      if (e && e.kind && !NO_RING.has(e.kind)) evs.push(e);
+    } catch { /* torn final line from a crash — skip */ }
+  }
+  for (const e of evs) ring.push({ id: nextId++, ts: e.ts || Date.now(), kind: e.kind, message: e.message || '', ...(e.data ? { data: e.data } : {}) });
+  const lastStart = ring.map((e) => e.kind).lastIndexOf('run.start');
+  const lastDone = ring.map((e) => e.kind).lastIndexOf('run.done');
+  if (lastStart >= 0 && lastDone < lastStart) {
+    const ev = {
+      id: nextId++, ts: Date.now(), kind: 'run.done',
+      message: 'run interrupted — server restarted',
+      data: { taskId: ring[lastStart].data?.taskId || null, ok: false, reason: 'server restarted mid-run' },
+    };
+    ring.push(ev);
+    persist(ev);
+  }
+  while (ring.length > RING_MAX) ring.shift();
+})();
 
 // SSE id is namespaced by boot epoch ("<bootId>.<n>"). A browser reconnecting
 // after a server restart still holds the previous epoch's Last-Event-ID; the
@@ -38,6 +118,28 @@ export function publish(kind, message, data) {
     ...(data ? { data } : {}),
   };
   if (!NO_RING.has(kind)) {
+    ring.push(ev);
+    if (ring.length > RING_MAX) ring.shift();
+    persist(ev);
+  }
+  const frame = `id: ${sseId(ev.id)}\ndata: ${JSON.stringify(ev)}\n\n`;
+  for (const res of clients) {
+    try { res.write(frame); } catch { clients.delete(res); }
+  }
+  return ev;
+}
+
+// publishForeign: an event tailed from the OTHER instance's appends to
+// events.jsonl — ring + broadcast like publish(), but never re-persisted
+// (that would ping-pong the same line between the two instances forever).
+export function publishForeign(e) {
+  if (!e || !e.kind) return null;
+  const ev = {
+    id: nextId++, ts: e.ts || Date.now(), kind: e.kind,
+    message: String(e.message ?? '').slice(0, 500),
+    ...(e.data ? { data: e.data } : {}),
+  };
+  if (!NO_RING.has(ev.kind)) {
     ring.push(ev);
     if (ring.length > RING_MAX) ring.shift();
   }

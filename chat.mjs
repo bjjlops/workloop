@@ -4,13 +4,14 @@
 // so it survives server restarts). Read-only toolset by default, so chatting
 // is safe even while an agent run is rewriting the repo.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { childEnv, resolveClaude, splitCommand } from './env.mjs';
 import { publish, publishLine } from './bus.mjs';
 import { fromChatText } from './handoffs.mjs';
 import { spawnTool, killTree, detachOpts } from './platform.mjs';
+import { writeJsonAtomic } from './watch.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FILE = join(__dirname, '.workloop', 'chat.json');
@@ -19,7 +20,7 @@ const MSG_CAP = 200;
 let sess = (() => {
   try { return JSON.parse(readFileSync(FILE, 'utf8')); } catch { return { sessionId: null, startedAt: 0, messages: [] }; }
 })();
-const save = () => writeFileSync(FILE, JSON.stringify(sess, null, 2));
+const save = () => writeJsonAtomic(FILE, sess);
 
 let child = null;       // single-flight
 let writingNow = false; // true while a write-capable chat turn is in flight
@@ -37,6 +38,15 @@ export function reset() {
   sess = { sessionId: null, startedAt: Date.now(), messages: [] };
   save();
   return { ok: true };
+}
+
+// reload: the OTHER instance (sharing .workloop/chat.json) advanced the
+// conversation — adopt its session. The server's watcher defers this while a
+// turn is in flight here, so an active stream is never clobbered.
+export function reload(next) {
+  if (next && typeof next === 'object') {
+    sess = { sessionId: next.sessionId ?? null, startedAt: next.startedAt || 0, messages: Array.isArray(next.messages) ? next.messages : [] };
+  }
 }
 
 const hasWriteTools = (tools) => /\b(Edit|Write|Bash|NotebookEdit)\b/i.test(tools || '');
@@ -197,7 +207,7 @@ export function send(req, res, { text, cfg, context, onGoals }) {
       } else if (!ok) {
         const signIn = /not logged in|please run \/login|\/login/i.test(errBuf);
         const message = signIn
-          ? 'Claude Code is not signed in — use Sign in under Engine & agent'
+          ? 'Claude Code is not signed in — use Sign in under Connections'
           : (errBuf.trim().split('\n').pop() || `chat exited (${code})`).slice(0, 300);
         write({ type: 'error', message, signIn });
         publish('chat.error', message, { signIn });

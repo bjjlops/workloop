@@ -167,9 +167,8 @@ function run(el, id) {
     es.addEventListener('end', () => {
       es.close();
       refreshRepo();
-      // re-scan so finished work leaves the board (checked-off backlog items,
-      // fixed verifier cards) — but not mid-batch, and not while another run is live
-      if (!state.batch && !state.running) scan();
+      // the SERVER schedules the post-run rescan now (scan.done re-renders
+      // every tab) — no client-side scan here
       resolve();
     });
     es.onerror = () => {
@@ -223,7 +222,7 @@ $('#runall').addEventListener('click', async () => {
   }
   state.batch = false;
   ra.textContent = 'Run all';
-  await scan();
+  // the server's post-run scan covers the batch too — scan.done re-renders
 });
 
 /* ---------- add a goal (promptless tasking) ---------- */

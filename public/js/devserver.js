@@ -34,6 +34,7 @@ async function pollDev() {
   try { renderDev(await (await fetch('/api/dev/status')).json()); } catch { /* server hiccup */ }
 }
 
-// dev start/exit events refresh the chip promptly (the 3s poll covers the gaps)
-Bus.on('dev.start', () => pollDev());
-Bus.on('dev.exit', () => pollDev());
+// dev start/exit events refresh the chip promptly (the 3s poll covers the gaps);
+// replayed history (the ring persists across restarts) doesn't need a poll
+Bus.on('dev.start', (ev) => { if (!ev?.ts || Date.now() - ev.ts < 15000) pollDev(); });
+Bus.on('dev.exit', (ev) => { if (!ev?.ts || Date.now() - ev.ts < 15000) pollDev(); });

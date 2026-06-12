@@ -41,7 +41,8 @@ document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2'
   <span class="extchips" id="extchips"></span>
   <span class="hud-spacer"></span>
   <div class="counts" id="counts"></div>
-  <button class="hud-chip" id="hud-engine" title="Engine — open control center"><span class="dot" id="d-engine"></span><span class="hud-engine-label">engine</span></button>
+  <button class="hud-signin" id="hud-signin" hidden title="Sign in to Claude Code — opens Terminal">Sign in</button>
+  <button class="hud-chip" id="hud-engine" title="Status &amp; connections — open control center"><span class="dot" id="d-engine"></span><span class="hud-engine-label">engine</span></button>
   <span id="devzone"></span>
   <button class="linkbtn" id="rescan">Rescan repo</button>
   <button class="hud-toggle" id="toggle-right" aria-controls="drawer-right" aria-expanded="true" title="Work panel  ]">☷<span class="hud-badge" id="hud-badge" hidden></span></button>
@@ -148,6 +149,14 @@ document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2'
   <div class="grip" id="grip-l" title="Drag to resize"></div>
   <div class="dl-scroll">
     <h2 class="dl-title">Control center</h2>
+
+    <details class="dlsec" id="sec-status" open>
+      <summary>Connections <span class="sumchip" id="conn-sum">checking…</span></summary>
+      <div class="dlbody">
+        <div id="conn-rows"></div>
+        <div class="row"><button class="linkbtn" id="conn-recheck">Recheck all</button></div>
+      </div>
+    </details>
 
     <details class="dlsec" id="sec-setup" open>
       <summary>Repo &amp; setup <span class="sumchip" id="repo">loading…</span></summary>

@@ -214,6 +214,9 @@ const Chat = (() => {
       setTimeout(() => { b.textContent = '⧉'; }, 900);
     });
     Bus.on('handoff.new', (ev) => {
+      // replayed history (the ring persists across restarts) must not re-add
+      // since-resolved cards or inflate the badge — loadHistory covers the past
+      if (ev?.ts && Date.now() - ev.ts > 15000) return;
       renderHandoff(ev.data?.handoff);
       if (!Drawers.isOpen('r')) {
         const badge = $('#hud-badge');
@@ -233,10 +236,34 @@ const Chat = (() => {
     };
     Bus.on('handoff.resolved', (ev) => settleHandoff(ev, '✓'));
     Bus.on('handoff.dismissed', (ev) => settleHandoff(ev, '—'));
+    // handoffs.json changed externally (the other Workloop instance) —
+    // reconcile cards without touching the transcript (loadHistory would
+    // wipe a streaming bubble)
+    Bus.on('handoff.changed', async (ev) => {
+      if (ev?.ts && Date.now() - ev.ts > 15000) return; // ring replay — stale
+      let hf;
+      try { hf = await (await fetch('/api/handoffs')).json(); } catch { return; }
+      for (const h of hf.handoffs || []) {
+        if (h.status === 'open') { renderHandoff(h); continue; } // idempotent by id
+        const el = document.getElementById('hf-' + h.id);
+        if (el && !el.classList.contains('resolved')) {
+          el.classList.add('resolved');
+          const t = el.querySelector('.ht span');
+          if (t) t.textContent = (h.status === 'done' ? '✓ ' : '— ') + t.textContent.replace(/^[⚠✓—]\s*/, '');
+          el.querySelector('.hact')?.remove();
+        }
+      }
+    });
+    // the other instance's copilot talked — refresh the transcript, but never
+    // mid-stream (this tab's reply is the fresher truth)
+    Bus.on('chat.changed', (ev) => {
+      if (ev?.ts && Date.now() - ev.ts > 15000) return;
+      if (!aborter) loadHistory();
+    });
     // repo switch resets the session server-side — REFETCH, never clear:
     // the bus replays its event ring on reconnect, and a clear-on-replay
     // would eat real messages on every page load
-    Bus.on('chat.reset', () => loadHistory());
+    Bus.on('chat.reset', (ev) => { if (!ev?.ts || Date.now() - ev.ts < 15000) loadHistory(); });
     loadHistory();
   }
 

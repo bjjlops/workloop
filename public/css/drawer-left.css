@@ -154,3 +154,13 @@
   background: rgba(255, 255, 255, .02);
 }
 .swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block }
+
+/* connections matrix (sec-status) */
+.connrow { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--line) }
+.connrow:last-child { border-bottom: none }
+.connrow .dot { flex: none }
+.connrow .dot.off { background: var(--faint); opacity: .45; box-shadow: none; animation: none }
+.connrow .cname { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); flex: none; width: 84px }
+.connrow .cmsg { font-family: var(--mono); font-size: 11px; color: var(--faint); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.connrow .linkbtn { flex: none; padding: 2px 6px }
+#conn-sum { direction: ltr; text-align: right } /* .sumchip is rtl for path ellipsis — counts must read LTR */

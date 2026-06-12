@@ -2,13 +2,14 @@
 // scanner.mjs — inspect the repo and produce work-loop task cards.
 // Writes .workloop/tasks.json. No dependencies.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { childEnv } from './env.mjs';
 import { userShell } from './platform.mjs';
+import { writeJsonAtomic } from './watch.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cfg = JSON.parse(readFileSync(join(__dirname, 'workloop.config.json'), 'utf8'));
@@ -18,8 +19,8 @@ if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true });
 
 if (!repo || !existsSync(repo)) {
   console.error(`workloop: repoPath not set or not found -> ${repo}`);
-  writeFileSync(join(stateDir, 'tasks.json'),
-    JSON.stringify({ meta: { repo, counts: { needsWork: 0, shouldImplement: 0 }, notes: ['repoPath not set — open Settings'] }, tasks: [] }, null, 2));
+  writeJsonAtomic(join(stateDir, 'tasks.json'),
+    { meta: { repo, counts: { needsWork: 0, shouldImplement: 0 }, notes: ['repoPath not set — open Settings'] }, tasks: [] });
   process.exit(1);
 }
 
@@ -172,7 +173,7 @@ const counts = {
   needsWork: tasks.filter((t) => t.column === 'needs-work').length,
   shouldImplement: tasks.filter((t) => t.column === 'should-implement').length,
 };
-writeFileSync(join(stateDir, 'tasks.json'),
-  JSON.stringify({ meta: { repo, generatedAt: new Date().toISOString(), counts, notes }, tasks }, null, 2));
+writeJsonAtomic(join(stateDir, 'tasks.json'),
+  { meta: { repo, generatedAt: new Date().toISOString(), counts, notes }, tasks });
 
 console.log(`workloop: ${tasks.length} task(s) — ${counts.needsWork} needs-work, ${counts.shouldImplement} should-implement${notes.length ? ' | ' + notes.join('; ') : ''}`);

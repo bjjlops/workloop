@@ -4,11 +4,12 @@
 // created here, persisted to .workloop/handoffs.json, and surfaced in the
 // dashboard's chat panel.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publish } from './bus.mjs';
+import { writeJsonAtomic } from './watch.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FILE = join(__dirname, '.workloop', 'handoffs.json');
@@ -16,7 +17,7 @@ const FILE = join(__dirname, '.workloop', 'handoffs.json');
 let items = (() => {
   try { return JSON.parse(readFileSync(FILE, 'utf8')); } catch { return []; }
 })();
-const save = () => writeFileSync(FILE, JSON.stringify(items, null, 2));
+const save = () => writeJsonAtomic(FILE, items);
 const keyOf = (source, title) => createHash('sha1').update(source + '\0' + title).digest('hex').slice(0, 8);
 
 export function list() {
@@ -26,6 +27,13 @@ export function list() {
 }
 
 export const openCount = () => items.filter((i) => i.status === 'open').length;
+
+// reload: the OTHER Workloop instance (sharing .workloop/) rewrote
+// handoffs.json — adopt its list. The file watcher hands us the parsed data.
+export function reload(next) {
+  if (Array.isArray(next)) items = next;
+  return openCount();
+}
 
 export function create(source, title, steps, context) {
   title = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 160);
@@ -53,7 +61,7 @@ export function setStatus(id, status) {
   h.resolvedAt = Date.now();
   save();
   publish(status === 'done' ? 'handoff.resolved' : 'handoff.dismissed',
-    `${status === 'done' ? 'resolved' : 'dismissed'} — ${h.title}`, { id });
+    `${status === 'done' ? 'resolved' : 'dismissed'} — ${h.title}`, { id, handoff: h });
   return h;
 }
 
@@ -92,28 +100,28 @@ export function fromRunFailure(taskId, title, reason, branch, logTail) {
   if (/another run is already active/i.test(reason)) return null;
   if (/logged in|\/login/i.test(reason)) {
     return create('run', 'Sign in to Claude Code', [
-      'Open Engine & agent in the control center and click Sign in (or run `claude /login` in Terminal)',
+      'Open Connections in the control center and click Sign in (or run `claude /login` in Terminal)',
       `Then Retry the task: ${title}`,
-    ], { taskId });
+    ], { taskId, tag: 'signin' });
   }
   if (/uncommitted changes/i.test(reason)) {
     return create('run', 'Commit or discard loose changes before running', [
       'Open Branches in the control center',
       'Commit (writes an AI-summarized message) or Discard the changes',
       `Then Retry the task: ${title}`,
-    ], { taskId });
+    ], { taskId, tag: 'dirty' });
   }
   if (/verifier/i.test(reason)) {
     return create('run', `Verifier still failing — ${title}`, [
       branch ? `The partial work is on branch \`${branch}\`` : 'The partial work is on the run branch',
       'Hit Run locally to test it, or open the branch in your editor',
       'Fix what remains, or Retry to let the agent take another pass',
-    ], { taskId, branch, log: (logTail || '').slice(-1200) });
+    ], { taskId, branch, tag: 'verifier', log: (logTail || '').slice(-1200) });
   }
   return create('run', `Run needs you — ${reason.slice(0, 120)}`, [
     branch ? `Inspect branch \`${branch}\`` : `Re-run the task after addressing: ${reason.slice(0, 160)}`,
     'Retry from the Tasks panel when ready',
-  ], { taskId, branch });
+  ], { taskId, branch, tag: 'other' });
 }
 
 /* ---- detection: chat ```handoff fences ---- */
