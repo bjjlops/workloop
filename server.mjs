@@ -358,6 +358,7 @@ async function findRepos() {
 
 // ---------- dev preview ("run my app locally") ----------
 let dev = { proc: null, lines: [], url: null, urlMapped: false, exited: true, exitCode: null, stopped: false, startedAt: 0 };
+let devRetryAt = 0; // last stale-port auto-recovery — at most one per 30s
 const devRunning = () => !!(dev.proc && !dev.exited);
 const devStatus = () => ({
   running: devRunning(), url: dev.url,
@@ -377,12 +378,35 @@ function startDev() {
   const p = spawn(sh.bin, sh.args, { ...sh.opts, cwd: cfg.repoPath, env: childEnv(), ...Platform.detachOpts() });
   dev.proc = p;
   publish('dev.start', `dev server starting — ${cmd}`, { command: cmd });
-  p.on('exit', (code) => {
-    if (dev.proc === p) {
-      dev.exited = true; dev.exitCode = code ?? -1;
-      publish('dev.exit', dev.stopped ? 'dev server stopped' : `dev server exited (code ${dev.exitCode})`,
-        { code: dev.exitCode, stopped: dev.stopped });
+  p.on('close', (code) => { // close, not exit: the holder-pid line can flush AFTER exit fires
+    if (dev.proc !== p) return;
+    dev.exited = true; dev.exitCode = code ?? -1;
+    // self-healing: if the start died because a STALE instance of this same
+    // repo's dev server holds the port (orphaned by a server restart), clear
+    // it and retry once. Expo names the holder: "<repoPath> (pid N)".
+    if (!dev.stopped && dev.exitCode !== 0 && dev.stalePid && Date.now() - devRetryAt > 30000) {
+      const pid = dev.stalePid;
+      let owns = Platform.isWin; // win: trust the dev tool's own report; POSIX: verify first
+      if (!owns) {
+        // ps argv may be RELATIVE ("node node_modules/.bin/expo …") — the
+        // process's cwd is the reliable ownership signal, argv the fallback
+        const cwd = spawnSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8' });
+        owns = (cwd.stdout || '').split('\n').some((l) => l.startsWith('n') && resolve(l.slice(1)) === resolve(cfg.repoPath));
+        if (!owns) {
+          const ps = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+          owns = (ps.stdout || '').includes(cfg.repoPath);
+        }
+      }
+      if (owns) {
+        try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+        devRetryAt = Date.now();
+        publish('dev.line', `stale dev server (pid ${pid}) from this repo held the port — cleared it, retrying`);
+        setTimeout(() => { if (!devRunning()) startDev(); }, 1200);
+        return;
+      }
     }
+    publish('dev.exit', dev.stopped ? 'dev server stopped' : `dev server exited (code ${dev.exitCode})`,
+      { code: dev.exitCode, stopped: dev.stopped });
   });
   p.on('error', () => { if (dev.proc === p) { dev.exited = true; dev.exitCode = -1; publish('dev.exit', 'dev server failed to start', { code: -1, stopped: false }); } });
   const onData = (d) => {
@@ -395,6 +419,12 @@ function startDev() {
       if (dev.lines.length > 200) dev.lines.shift();
       publishLine('dev.line', s.slice(0, 200));
       Handoffs.checkDevLine(s); // known launch blockers become handoffs immediately
+      // port-clash forensics: remember WHO holds the port when the tool says so
+      if (/Port \d+ is running this app in another window/i.test(s)) dev.portClash = true;
+      if (dev.portClash && !dev.stalePid) {
+        const pm = s.match(/^(.+) \(pid (\d+)\)$/);
+        if (pm && resolve(pm[1].trim()) === resolve(cfg.repoPath)) dev.stalePid = Number(pm[2]);
+      }
       // URL detection: direct http(s)://localhost wins; exp:// and LAN-IP URLs
       // (Metro/Expo/Vite "Network" lines) map to the same port on localhost.
       if (!dev.url || dev.urlMapped) {
@@ -423,7 +453,12 @@ function stopDev() {
   return { running: false };
 }
 function shutdown() {
-  stopDev();
+  // we're exiting NOW — graceful doesn't matter, orphans do. SIGKILL the dev
+  // tree immediately (the polite stopDev() escalation would never get to run).
+  if (devRunning()) {
+    try { Platform.killTree(dev.proc, 'SIGKILL'); } catch { /* gone */ }
+    dev.exited = true; dev.stopped = true;
+  }
   Chat.shutdown();
   Commands.shutdown();
   if (runnerChild) { try { runnerChild.kill('SIGTERM'); } catch { /* gone */ } }
@@ -431,6 +466,7 @@ function shutdown() {
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+process.on('SIGHUP', shutdown); // closing the Terminal window must not orphan the dev tree
 
 // ---------- static files ----------
 // Read-per-request with no-store: edits to the dashboard never need a server
