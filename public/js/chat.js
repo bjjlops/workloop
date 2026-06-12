@@ -44,10 +44,10 @@ const Chat = (() => {
     stick(false);
   }
 
-  /* strip ```handoff fences from a finished bubble — the card replaces them */
+  /* strip ```handoff / ```queue fences from a finished bubble — cards replace them */
   function finalizeBubble(el) {
     const mb = el.querySelector('.mb');
-    const cleaned = mb.textContent.replace(/```handoff\n[\s\S]*?```/g, '').replace(/\n{3,}/g, '\n\n').trim();
+    const cleaned = mb.textContent.replace(/```(?:handoff|queue)\n[\s\S]*?```/g, '').replace(/\n{3,}/g, '\n\n').trim();
     if (cleaned) mb.innerHTML = richText(cleaned);
     else if (!el.querySelector('.tooluse')) el.remove(); // reply was only a handoff
     else mb.remove();
@@ -78,12 +78,27 @@ const Chat = (() => {
     else { msgs.appendChild(el); stick(true); }
   }
 
+  /* the copilot pushed goals onto the board (```queue fence) — confirm inline */
+  function renderQueued(title, blockedCount) {
+    const el = document.createElement('div');
+    el.className = 'queued' + (title ? '' : ' blocked');
+    el.innerHTML = title
+      ? `<span>⊕ queued — ${esc(title)}</span><button class="linkbtn act-board">Show board</button>`
+      : `<span>⚠ ${blockedCount} goal${blockedCount === 1 ? '' : 's'} not queued — a run is active; ask again after it finishes</span>`;
+    el.querySelector('.act-board')?.addEventListener('click', () => {
+      Drawers.setOpen('r', true);
+      Drawers.setFolded('tasks', false);
+    });
+    msgs.appendChild(el);
+    stick(true);
+  }
+
   function emptyState() {
     if (msgs.children.length) return;
     const d = document.createElement('div');
     d.className = 'chat-empty';
     d.innerHTML = 'Ask about this repo — the copilot can read it.';
-    for (const s of ['What changed in the last run?', 'Where is the dev-server URL detected?', 'Summarize the open handoffs']) {
+    for (const s of ['What changed in the last run?', 'What should I work on next?', 'Summarize the open handoffs']) {
       const b = document.createElement('button');
       b.className = 'starter';
       b.textContent = s;

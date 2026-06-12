@@ -16,7 +16,7 @@
 // /api/commands/status buffers.
 
 const RING_MAX = 500;
-const NO_RING = new Set(['run.agent', 'dev.line', 'cmd.line']);
+const NO_RING = new Set(['run.agent', 'dev.line', 'cmd.line', 'chat.tool']);
 const FLOOD_PER_SEC = 25; // per-kind line budget before coalescing kicks in
 
 const ring = [];
@@ -46,6 +46,12 @@ export function publish(kind, message, data) {
     try { res.write(frame); } catch { clients.delete(res); }
   }
   return ev;
+}
+
+// recent(): newest-last tail of the ring — the copilot's per-turn workspace
+// snapshot reads the same event history the activity panel renders.
+export function recent(n = 20) {
+  return ring.slice(-n);
 }
 
 // publishLine: publish() with a per-kind 1s coalescer for line-rate kinds —

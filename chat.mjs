@@ -8,7 +8,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { childEnv, resolveClaude, splitCommand } from './env.mjs';
-import { publish } from './bus.mjs';
+import { publish, publishLine } from './bus.mjs';
 import { fromChatText } from './handoffs.mjs';
 import { spawnTool, killTree, detachOpts } from './platform.mjs';
 
@@ -49,12 +49,32 @@ function preamble(tools) {
     + (ro
       ? `Your tool access is read-only (${tools}) — you cannot edit files or run commands; the dashboard's Run buttons do that.`
       : `Your tools: ${tools}.`)
-    + ' When the user must do something you cannot reach — steps in external dashboards (Cloudflare, Vercel, Supabase, App Store Connect, DNS registrars), secrets or API keys, sign-ins, purchases, physical devices — emit a fenced code block whose info string is exactly handoff: first line a short imperative title, following lines numbered steps, each runnable command wrapped in backticks.';
+    + ' A live WORKSPACE STATE snapshot (task board, queue, agent run, recent activity, open handoffs, git) is appended to these instructions and regenerated every turn — trust it over anything older in the conversation when answering questions about tasks, runs, activity, or handoffs.'
+    + ' When the user must do something you cannot reach — steps in external dashboards (Cloudflare, Vercel, Supabase, App Store Connect, DNS registrars), secrets or API keys, sign-ins, purchases, physical devices — emit a fenced code block whose info string is exactly handoff: first line a short imperative title, following lines numbered steps, each runnable command wrapped in backticks.'
+    + ' When the user asks you to queue, add, or track work for later (or accepts your offer to queue it), emit a fenced code block whose info string is exactly queue: one goal per line, short and imperative — Workloop appends each to the backlog and it appears under Queue on the task board.';
 }
 
-// send(): streams {type:'delta'|'tool'|'handoff'|'error'|'done'} NDJSON lines.
-// The fetch connection IS the cancel mechanism — client aborts, we kill.
-export function send(req, res, { text, cfg }) {
+// ```queue fences — the copilot's way to push goals onto the task board.
+// Parsed from the finished reply; the server decides whether they may land
+// (never mid-run) and answers with what was actually queued.
+function goalsFromText(text) {
+  const out = [];
+  const re = /```queue\n([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(text || ''))) {
+    for (const raw of m[1].split('\n')) {
+      const s = raw.trim().replace(/^(\d+[.)]|[-*])\s*/, '');
+      if (s) out.push(s);
+    }
+  }
+  return out;
+}
+
+// send(): streams {type:'delta'|'tool'|'handoff'|'queued'|'queue_blocked'|'error'|'done'}
+// NDJSON lines. The fetch connection IS the cancel mechanism — client aborts, we kill.
+// context: the server's live workspace snapshot, appended to the system prompt
+// each turn. onGoals: the server's queue hook for ```queue fences.
+export function send(req, res, { text, cfg, context, onGoals }) {
   if (child) {
     res.writeHead(409, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ error: 'a chat reply is already streaming — stop it first' }));
@@ -86,7 +106,7 @@ export function send(req, res, { text, cfg }) {
       '--allowedTools', tools,
       '--max-turns', String(cfg.chat?.maxTurns ?? 15),
       ...(sess.sessionId ? ['--resume', sess.sessionId] : []),
-      '--append-system-prompt', preamble(tools),
+      '--append-system-prompt', preamble(tools) + (context ? `\n\n${context}` : ''),
       ...extraArgs,
     ];
     let c;
@@ -135,6 +155,9 @@ export function send(req, res, { text, cfg }) {
             else if (block.type === 'tool_use') {
               const detail = block.input?.file_path || block.input?.path || block.input?.pattern || block.input?.command || '';
               write({ type: 'tool', name: block.name, detail: String(detail).slice(0, 160) });
+              // mirror onto the bus so the activity log's verbose view shows the
+              // copilot working, same as run.agent / dev.line / cmd.line
+              publishLine('chat.tool', `${block.name}${detail ? ' — ' + String(detail).slice(0, 120) : ''}`);
             }
           }
         } else if (o.type === 'result') {
@@ -163,6 +186,13 @@ export function send(req, res, { text, cfg }) {
         if (sess.messages.length > MSG_CAP) sess.messages = sess.messages.slice(-MSG_CAP);
         save();
         for (const h of fromChatText(reply, { sessionId: sess.sessionId })) write({ type: 'handoff', handoff: h });
+        const goals = goalsFromText(reply);
+        if (goals.length && onGoals) {
+          let r = {};
+          try { r = onGoals(goals) || {}; } catch { /* queueing failed — the reply still stands */ }
+          for (const t of r.queued || []) write({ type: 'queued', title: t });
+          if (r.blocked) write({ type: 'queue_blocked', count: goals.length });
+        }
         publish('chat.done', reply.slice(0, 160), { durationMs: Date.now() - t0 });
       } else if (!ok) {
         const signIn = /not logged in|please run \/login|\/login/i.test(errBuf);

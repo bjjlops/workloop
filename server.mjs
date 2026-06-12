@@ -2,7 +2,7 @@
 // server.mjs — zero-dependency local server for the work-loop dashboard.
 
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, existsSync, appendFileSync, lstatSync, readdirSync, chmodSync, openSync, readSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, lstatSync, readdirSync, chmodSync, openSync, readSync, closeSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -11,7 +11,7 @@ import { dirname, extname, join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { childEnv, claudeInfo, loginPath, resolveClaude, splitCommand } from './env.mjs';
 import * as Platform from './platform.mjs';
-import { attach as busAttach, bootId, publish, publishLine } from './bus.mjs';
+import { attach as busAttach, bootId, publish, publishLine, recent as busRecent } from './bus.mjs';
 import * as Chat from './chat.mjs';
 import * as Handoffs from './handoffs.mjs';
 import * as Commands from './commands.mjs';
@@ -503,6 +503,61 @@ const busSnapshot = () => ({
   handoffsOpen: Handoffs.openCount(),
 });
 
+// ---------- the AI side, connected ----------
+// queueGoals: append unchecked items to the repo's backlog file. Shared by
+// POST /api/backlog and the copilot's ```queue fences, so both paths dedupe
+// and format identically. Returns what actually landed.
+function queueGoals(cfg, titles) {
+  const file = join(cfg.repoPath, cfg.sources?.backlog || 'BACKLOG.md');
+  let cur = existsSync(file) ? readFileSync(file, 'utf8') : '# Backlog\n\n';
+  const open = new Set(cur.split('\n').map((l) => l.match(/^\s*[-*]\s+\[ \]\s+(.*)$/)).filter(Boolean).map((m) => m[1].trim()));
+  const queued = [], dup = [];
+  for (const raw of titles) {
+    const clean = String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!clean) continue;
+    if (open.has(clean)) { dup.push(clean); continue; }
+    cur += `${cur.endsWith('\n') ? '' : '\n'}- [ ] ${clean}\n`;
+    open.add(clean);
+    queued.push(clean);
+  }
+  if (queued.length) writeFileSync(file, cur);
+  return { queued, dup };
+}
+
+// chatContext: one compact snapshot, regenerated per turn, of everything the
+// dashboard panels render — task board, queue, live run, recent activity,
+// open handoffs, git. The copilot reads the SAME state the user is looking
+// at, so its answers can't drift out of sync with the work panel.
+function chatContext(cfg) {
+  const cap = (s, n = 140) => String(s || '').slice(0, n);
+  const ago = (ts) => {
+    const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ago`;
+  };
+  const t = readTasks();
+  const counts = t.meta?.counts || { needsWork: 0, shouldImplement: 0 };
+  const g = gitInfo(cfg.repoPath);
+  const item = (x) => `  - [${x.source}] ${cap(x.title)}${x.file ? ` (${x.file}${x.line ? ':' + x.line : ''})` : ''}`;
+  const sect = (label, rows, total) => {
+    const more = total > rows.length ? `\n  - …and ${total - rows.length} more` : '';
+    return `${label} (${total}):${rows.length ? '\n' + rows.join('\n') + more : ' none'}`;
+  };
+  const nw = (t.tasks || []).filter((x) => x.column === 'needs-work');
+  const qd = (t.tasks || []).filter((x) => x.column === 'should-implement');
+  const open = Handoffs.list().filter((h) => h.status === 'open');
+  const acts = busRecent(15).filter((e) => !e.kind.startsWith('chat.'))
+    .map((e) => `  - ${ago(e.ts)} · ${e.kind} · ${cap(e.message)}`);
+  return [
+    'WORKSPACE STATE (live, regenerated for this turn — supersedes anything earlier in the conversation):',
+    `repo: ${cfg.repoPath} · branch: ${g.branch || '?'} · ${g.dirty ? 'uncommitted changes' : 'clean tree'}`,
+    `agent run: ${currentRun ? `ACTIVE — "${currentRun.title}"${currentRun.file ? ` (${currentRun.file})` : ''}` : 'none active'}`,
+    sect('needs work', nw.slice(0, 8).map(item), counts.needsWork),
+    sect('queue', qd.slice(0, 8).map(item), counts.shouldImplement),
+    sect('open handoffs', open.slice(0, 6).map((h) => `  - [${h.source}] ${cap(h.title)}`), open.length),
+    `recent activity (oldest first):${acts.length ? '\n' + acts.join('\n') : ' none yet'}`,
+  ].join('\n');
+}
+
 // ---------- http ----------
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -520,7 +575,16 @@ const server = createServer(async (req, res) => {
     // read-only chat may run alongside an agent; write-capable chat may not
     if (Chat.hasWriteTools(cfg.chat?.allowedTools) && (activeRuns > 0 || Commands.running()))
       return json(res, 409, { error: 'chat has write tools configured — wait for the active run/command to finish' });
-    return Chat.send(req, res, { text: clean, cfg });
+    // ```queue fences land here: same rules as POST /api/backlog — never
+    // dirty the tree mid-run; boards everywhere refresh via scan.done
+    const onGoals = (titles) => {
+      if (activeRuns > 0) return { queued: [], blocked: true };
+      const { queued } = queueGoals(readCfg(), titles);
+      for (const t of queued) publish('task.queued', `goal queued by copilot — ${t}`);
+      if (queued.length) runScannerAsync('copilot queued goals');
+      return { queued, blocked: false };
+    };
+    return Chat.send(req, res, { text: clean, cfg, context: chatContext(cfg), onGoals });
   }
   if (req.method === 'GET' && url.pathname === '/api/chat/history') return json(res, 200, Chat.history());
   if (req.method === 'POST' && url.pathname === '/api/chat/reset') return json(res, 200, Chat.reset());
@@ -701,13 +765,9 @@ const server = createServer(async (req, res) => {
     if (!clean) return json(res, 400, { error: 'empty goal' });
     const cfg = readCfg();
     if (!cfg.repoPath || !existsSync(cfg.repoPath)) return json(res, 400, { error: 'repoPath not set' });
-    const file = join(cfg.repoPath, cfg.sources?.backlog || 'BACKLOG.md');
-    if (!existsSync(file)) writeFileSync(file, '# Backlog\n\n');
-    const cur = readFileSync(file, 'utf8');
-    const open = cur.split('\n').map((l) => l.match(/^\s*[-*]\s+\[ \]\s+(.*)$/)).filter(Boolean).map((m) => m[1].trim());
-    if (open.includes(clean)) return json(res, 400, { error: 'already queued — that goal is on the board' });
-    appendFileSync(file, `${cur && !cur.endsWith('\n') ? '\n' : ''}- [ ] ${clean}\n`);
-    publish('task.queued', `goal queued — ${clean}`);
+    const { queued } = queueGoals(cfg, [clean]);
+    if (!queued.length) return json(res, 400, { error: 'already queued — that goal is on the board' });
+    publish('task.queued', `goal queued — ${queued[0]}`);
     const scanLog = await runScannerAsync();
     return json(res, 200, { ...readTasks(), scanLog });
   }
