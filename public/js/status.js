@@ -184,7 +184,7 @@ $('#conn-rows')?.addEventListener('click', (e) => {
 // replays its ring on reconnect, so stale events must not re-fetch)
 let connSync = null;
 const connRefresh = (ev) => {
-  if (ev?.ts && Date.now() - ev.ts > 15000) return;
+  if (!Bus.live(ev)) return;
   clearTimeout(connSync);
   connSync = setTimeout(() => loadStatus(false), 200);
 };

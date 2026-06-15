@@ -14,7 +14,7 @@
 
 import { spawnSync, spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
-import { spawnTool, userShell } from '../platform.mjs';
+import { spawnTool, userShell, detachOpts, killTree } from '../platform.mjs';
 
 // ---------- process helpers (mirror runner.mjs's shArgs / sh) ----------
 // runArgs: argv form, NO shell — use whenever an argument carries user/scan text
@@ -24,11 +24,14 @@ export function runArgs(file, args, { cwd, env } = {}) {
   return { code: r.status ?? 1, out: r.stdout || '', err: r.stderr || '' };
 }
 // runShell: a USER-AUTHORED command string (verifiers, dev command) — a shell is
-// correct by definition here because the user wrote shell syntax.
-export function runShell(cmd, { cwd, env } = {}) {
+// correct by definition here because the user wrote shell syntax. An optional
+// timeout (ms) hard-stops a hung verifier so it can't hold the one-writer lock.
+export function runShell(cmd, { cwd, env, timeout } = {}) {
   const s = userShell(cmd);
-  const r = spawnSync(s.bin, s.args, { ...s.opts, cwd, encoding: 'utf8', maxBuffer: 1024 * 1024 * 30, env });
-  return { code: r.status ?? 1, out: r.stdout || '', err: r.stderr || '' };
+  const r = spawnSync(s.bin, s.args, { ...s.opts, cwd, encoding: 'utf8', maxBuffer: 1024 * 1024 * 30, env, timeout, killSignal: 'SIGKILL' });
+  const timedOut = !!(r.error && r.error.code === 'ETIMEDOUT');
+  const note = timedOut ? `\n[command timed out after ${Math.round((timeout || 0) / 1000)}s]` : '';
+  return { code: r.status ?? 1, out: r.stdout || '', err: (r.stderr || '') + note, timedOut };
 }
 
 export const tail = (s, n = 20) => String(s || '').split('\n').filter((l) => l.trim()).slice(-n).join('\n');
@@ -40,7 +43,9 @@ export const tail = (s, n = 20) => String(s || '').split('\n').filter((l) => l.t
 // retries) — track all of them.
 const liveChildren = new Set();
 export function killAllAgents(sig = 'SIGKILL') {
-  for (const c of liveChildren) { try { c.kill(sig); } catch { /* gone */ } }
+  // killTree (not .kill) so the agent's Bash grandchildren are reaped too — a bare
+  // .kill leaves them orphaned, still editing the tree after the parent is gone.
+  for (const c of liveChildren) { try { killTree(c, sig); } catch { /* gone */ } }
 }
 
 // ---------- file-event mapping ----------
@@ -135,12 +140,17 @@ export function runAgent(o) {
 
   return new Promise((resolve) => {
     let child;
-    try { child = spawnTool(claudeBin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }); }
-    catch (e) { return resolve({ code: -1, sawAuthError, text, error: `could not start engine: ${e.message}` }); }
+    // detachOpts(): own process group so killTree reaps the whole agent subtree.
+    try { child = spawnTool(claudeBin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], ...detachOpts() }); }
+    catch (e) { return resolve({ code: -1, sawAuthError, text, timedOut: false, error: `could not start engine: ${e.message}` }); }
     liveChildren.add(child);
+    // Wall-clock budget so a hung agent can't hold the one-writer lock forever.
+    let timedOut = false;
+    const timer = o.timeoutMs ? setTimeout(() => { timedOut = true; try { killTree(child, 'SIGKILL'); } catch { /* gone */ } }, o.timeoutMs) : null;
     child.on('error', (e) => {
+      if (timer) clearTimeout(timer);
       liveChildren.delete(child);
-      resolve({ code: -1, sawAuthError, text, error: `engine failed to launch (${e.code || e.message})` });
+      resolve({ code: -1, sawAuthError, text, timedOut, error: `engine failed to launch (${e.code || e.message})` });
     });
     let buf = '';
     child.stdout.on('data', (d) => {
@@ -148,7 +158,7 @@ export function runAgent(o) {
       let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); handleLine(line, { emit, onText, relToRoot, auth }); }
     });
     child.stderr.on('data', (d) => { const m = d.toString().trim(); auth(m); if (m) emit({ type: 'agent', message: m.slice(0, 300) }); });
-    child.on('close', (c) => { liveChildren.delete(child); resolve({ code: c ?? -1, sawAuthError, text }); });
+    child.on('close', (c) => { if (timer) clearTimeout(timer); liveChildren.delete(child); resolve({ code: c ?? -1, sawAuthError, text, timedOut }); });
   });
 }
 

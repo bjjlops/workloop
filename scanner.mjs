@@ -4,12 +4,12 @@
 
 import { readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { childEnv } from './env.mjs';
 import { userShell } from './platform.mjs';
 import { writeJsonAtomic } from './watch.mjs';
+import { cardId as id, backlogCard, findingCard, recomputeCounts, BACKLOG_UNCHECKED_RE } from './cards.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cfg = JSON.parse(readFileSync(join(__dirname, 'workloop.config.json'), 'utf8'));
@@ -30,7 +30,6 @@ function sh(cmd, cwd = repo) { // user-authored verifier commands — a shell is
   const r = spawnSync(s.bin, s.args, { ...s.opts, cwd, encoding: 'utf8', maxBuffer: 1024 * 1024 * 30, env: ENV });
   return { code: r.status ?? 1, out: r.stdout || '', err: r.stderr || '' };
 }
-const id = (...p) => createHash('sha1').update(p.join('|')).digest('hex').slice(0, 8);
 const tail = (s, n = 24) => s.split('\n').filter((l) => l.trim()).slice(-n).join('\n');
 
 // package.json scripts — so a missing npm script is skipped, not shown as "failing"
@@ -159,12 +158,8 @@ if (cfg.sources.backlog) {
   const p = join(repo, cfg.sources.backlog);
   if (existsSync(p)) {
     readFileSync(p, 'utf8').split('\n').forEach((ln, i) => {
-      const m = ln.match(/^\s*[-*]\s+\[ \]\s+(.*)$/);
-      if (m && m[1].trim()) add({
-        id: id('backlog', String(i), m[1]), source: 'backlog', column: 'should-implement',
-        title: m[1].trim(), file: cfg.sources.backlog, line: i + 1,
-        detail: `From ${cfg.sources.backlog}`, verifiable: false, verifyCmd: null,
-      });
+      const m = ln.match(BACKLOG_UNCHECKED_RE);
+      if (m && m[1].trim()) add(backlogCard(cfg.sources.backlog, i, m[1]));
     });
   }
 }
@@ -177,20 +172,11 @@ if (cfg.sources.backlog) {
   let findings = [];
   try { findings = JSON.parse(readFileSync(join(stateDir, 'findings.json'), 'utf8')); } catch { /* none */ }
   const mine = findings.filter((f) => f.status === 'open' && (!f.repo || f.repo === repo));
-  for (const f of mine.slice(0, 40)) {
-    add({
-      id: f.id.slice(3), source: 'finding', origin: f.source, findingId: f.id,
-      column: 'needs-work', title: f.title, file: f.file || null, line: f.line || null,
-      detail: f.detail || `reported by ${f.source}`, verifiable: false, verifyCmd: null,
-    });
-  }
+  for (const f of mine.slice(0, 40)) add(findingCard(f));
   if (mine.length > 40) notes.push(`showing 40 of ${mine.length} findings`);
 }
 
-const counts = {
-  needsWork: tasks.filter((t) => t.column === 'needs-work').length,
-  shouldImplement: tasks.filter((t) => t.column === 'should-implement').length,
-};
+const counts = recomputeCounts(tasks);
 writeJsonAtomic(join(stateDir, 'tasks.json'),
   { meta: { repo, generatedAt: new Date().toISOString(), counts, notes }, tasks });
 

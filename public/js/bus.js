@@ -7,6 +7,13 @@ const Bus = (() => {
   const subs = []; // [prefix, fn]
   let es = null, lastBootId = null;
 
+  // The event ring PERSISTS across restarts and replays historical events on
+  // every page load. `live` is the single freshness gate every consumer shares:
+  // an event older than LIVE_MS is a replay, not a fresh action, and must not
+  // flip run state, fire galaxy animations, or trigger refreshes.
+  const LIVE_MS = 15000;
+  const live = (ev) => !ev?.ts || Date.now() - ev.ts < LIVE_MS;
+
   function on(prefix, fn) { subs.push([prefix, fn]); }
   function dispatch(ev) {
     for (const [p, fn] of subs) {
@@ -42,10 +49,6 @@ const Bus = (() => {
     // EventSource reconnects automatically (server sends retry: 3000)
   }
 
-  // the ring PERSISTS across restarts now — replayed historical run events
-  // must not flip run state (and fire the galaxy run animations) on every
-  // page load; a reload that lands mid-run re-syncs from the hello snapshot
-  const live = (ev) => !ev?.ts || Date.now() - ev.ts < 15000;
   on('run.start', (ev) => { if (live(ev)) syncRun(ev.data || { taskId: '?' }); });
   on('run.done', (ev) => { if (live(ev)) syncRun(null, ev.data ? !!ev.data.ok : null); });
   on('run.file', (ev) => { // live read/edit attribution for the galaxy trails
@@ -54,5 +57,5 @@ const Bus = (() => {
     if (typeof Repo3D !== 'undefined') Repo3D.fileActivity?.(ev.data.path, ev.data.op);
   });
 
-  return { connect, on };
+  return { connect, on, live };
 })();

@@ -100,11 +100,16 @@ same flags can be substituted via the binary field.
 
 ## How a Run works
 
-1. Refuses to start on a dirty tree (it never scoops up your in-progress edits).
+1. Refuses to start on a dirty tree (it never scoops up your in-progress edits),
+   and refuses to run unless it actually landed on the work branch.
 2. Creates a branch: `workloop/<source>-<slug>-<id>`.
-3. Invokes the engine headlessly in your repo with a tight tool scope and
-   capped turns. The agent edits, runs your verifier itself, keeps fixing.
-4. **Independent gate:** Workloop re-runs the verifier — a card can't lie.
+3. Invokes the engine headlessly in your repo with a tight tool scope, capped
+   turns, and a wall-clock budget. The agent edits, runs your verifier itself,
+   keeps fixing.
+4. **Independent gate:** Workloop re-runs the verifier — a card can't lie. If it
+   fails (or times out), the run discards its partial edits so the tree stays
+   clean and the next run isn't blocked. Cards with no configured check
+   (findings, TODOs, backlog) commit but are flagged *not independently verified*.
 5. Commits with a conventional message. With `openPR` on → push + `gh pr create`.
 
 A Run only ever **creates a branch and a commit**. It never merges, deploys,
@@ -120,6 +125,26 @@ design (runs, saved commands, and write-chat exclude each other).
 - `env.mjs` — login-PATH capture + engine discovery
 - `workloop.config.json` — your settings (auto-created on first boot; personal,
   gitignored) · `.workloop/` — local state (tasks, chat session, handoffs)
+
+## Developing Workloop
+
+Still zero runtime dependencies — Workloop runs on Node alone. Its own checks
+are built the same way, so there's nothing to `npm install`:
+
+- `npm run lint` — zero-dep syntax gate: `node --check` over every source file
+  (server, runner, scanner, and the whole browser bundle).
+- `npm test` — the [`node:test`](test/) suite covering the pure parsers/helpers.
+- `npm run check` — runs both; this is the verifier to point Workloop at itself.
+
+**Dogfood it:** copy [`workloop.config.sample.json`](workloop.config.sample.json)
+to `workloop.config.json`, set `repoPath` to your checkout, and its verifier
+(`npm run lint` / `npm test`) lets Workloop fix Workloop. For deeper one-off
+static analysis you can always point an external linter at the tree — nothing in
+the repo requires it.
+
+The server is **localhost-only by design**: it binds `127.0.0.1` and rejects
+non-loopback `Host` / cross-origin requests, since a Run can execute shell
+commands. Keep it that way.
 
 ## Platform notes
 
@@ -138,7 +163,9 @@ design (runs, saved commands, and write-chat exclude each other).
 - **Engine: claude not found** — set the full path in Engine & agent → Recheck.
 - **Not signed in** — the Sign in button opens a terminal with `claude /login`.
 - **"working tree has uncommitted changes"** — Commit or Discard in Branches
-  (the galaxy's pulsing rings show you exactly which files).
+  (the galaxy's pulsing rings show you exactly which files). A *failed* run now
+  cleans up after itself, so this almost always means edits that are genuinely
+  yours.
 - **Push rejected** — Sync first (fast-forward only), then Push.
 - **A check shows failing but the script doesn't exist** — missing npm scripts
   are skipped and noted; use Detect to align commands with reality.

@@ -11,30 +11,12 @@ const RepoViz = (() => {
   const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   /* ----- theme ----- */
-  // Extension → palette-group map. The 15 group colors (one per --pal-* CSS
-  // token) expand to the per-extension table the draw code reads.
-  const EXT_GROUPS = {
-    dir: ['dir'], ts: ['ts'], tsx: ['tsx'], js: ['js'], jsx: ['jsx'],
-    script: ['mjs', 'cjs', 'sh', 'zsh', 'bash'], data: ['json'],
-    style: ['css', 'scss', 'sass', 'less'], markup: ['html'],
-    docs: ['md', 'mdx', 'txt'], sql: ['sql'],
-    image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'],
-    config: ['yml', 'yaml', 'toml', 'lock', 'env', 'plist', 'gradle', 'properties', 'config'],
-    native: ['swift', 'kt', 'java', 'm', 'h', 'mm'],
-    other: ['other'],
-  };
-  function expandPal(groups) {
-    const pal = {};
-    for (const [group, exts] of Object.entries(EXT_GROUPS)) for (const e of exts) pal[e] = groups[group];
-    return pal;
-  }
+  // Palette map, heat ramp, byte/ease formatters, and trail/ping defaults are
+  // shared with the 3D renderer via galaxy-core.js — one source of truth so a
+  // palette or formatter change can't drift between the two views.
+  const { EXT_GROUPS, expandPal, PAL_DEFAULT, buildHeat, extOf, fmtB, easeIO, TRAILS_DEF, PING_DEF } = GalaxyCore;
   const THEME = {
-    pal: expandPal({
-      dir: '#4fd1c5', ts: '#8ab4ff', tsx: '#5e8fe6', js: '#e6cf6f', jsx: '#cdb45c',
-      script: '#3fb66e', data: '#e0a33e', style: '#c08bff', markup: '#e0614b',
-      docs: '#8c95a3', sql: '#d678b6', image: '#5dbb8f', config: '#7d8aa0',
-      native: '#d98a68', other: '#5c6470',
-    }),
+    pal: expandPal(PAL_DEFAULT),
     heatStops: ['#ecb24c', '#c48642', '#786a58', '#4a5260', '#343b47'], // recent → old
     heatEmpty: '#3a4150',
     link: '#565f6e',
@@ -55,13 +37,6 @@ const RepoViz = (() => {
   const sceneryQ = () => (typeof VizScenery !== 'undefined' ? VizScenery.q() : 0);
   const CONFIG_RE = /^(package(-lock)?\.json|app\.json|eas\.json|tsconfig[^/]*|babel\.config\.[^/]+|metro\.config\.[^/]+|\.[^/]*rc[^/]*|[^/]+\.config\.(js|ts|mjs|cjs))$/i;
 
-  function buildHeat(stopsHex) { // 32-step ramp lerped between the 5 stops
-    const stops = stopsHex.map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)));
-    return Array.from({ length: 32 }, (_, i) => {
-      const t = (i / 31) * (stops.length - 1), a = Math.min(stops.length - 2, Math.floor(t)), f = t - a;
-      return '#' + stops[a].map((v, j) => Math.round(v + (stops[a + 1][j] - v) * f).toString(16).padStart(2, '0')).join('');
-    });
-  }
   let HEAT = buildHeat(THEME.heatStops);
 
   const withAlpha = (hex, a) =>
@@ -96,13 +71,11 @@ const RepoViz = (() => {
   let spotPath = null, spotChain = null, extFilter = null, hoverCb = null, fileClickCb = null;
   let selPath = null, selChain = null; // node-menu selection — blue trail
   const activity = new Map(); // path -> { op: 'read'|'edit', t } — live agent tool attribution
-  const TRAILS_DEF = { hover: '#3b82f6', selected: '#3b82f6', read: '#ff9f43', edit: '#ff4d4d', done: '#22c55e', holdMs: 2000 };
   const trailsCfg = () => (typeof Trails !== 'undefined' ? Trails.cfg : TRAILS_DEF);
   let menuCb = null, pathFilter = null, pathAnc = null, taskMarks = new Map(), pinSet = new Set();
   let dirtySet = new Set(); // uncommitted files — slow alert ring
   const waves = []; // light-bending shockwaves rippling out from dirty nodes
   let lastWaveCyc = -1;
-  const PING_DEF = { on: true, every: 7, sweep: 3.6, width: 1, power: 1 };
   const pingCfg = () => (typeof Ping !== 'undefined' ? Ping.cfg : PING_DEF); // Appearance sliders
 
   const resolveV = (p) => { // folded files mark their nearest visible ancestor
@@ -116,12 +89,8 @@ const RepoViz = (() => {
   let maxDepth = 1;
 
   /* ----- small helpers ----- */
-  const extOf = (n) => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : ''; };
-  const fmtB = (n) => n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB'
-    : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : (n || 0) + ' B';
   const ago = (t) => { const d = Date.now() / 1000 - t;
     return d < 3600 ? Math.max(1, Math.floor(d / 60)) + 'm ago' : d < 86400 ? Math.floor(d / 3600) + 'h ago' : Math.floor(d / 86400) + 'd ago'; };
-  const easeIO = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
   const easeOB = (p) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2); };
   const ringR = (d) => (d <= 0 ? 0 : RING0 + RING * (d - 1));
   const keyOfV = (v) => (v.isAgg ? v.host.path + '/*' : v.n.path);
@@ -512,17 +481,24 @@ const RepoViz = (() => {
   }
 
   /* ----- drawing: base layer ----- */
-  function linkPath(ctx, p, c) { // organic curl along the radial direction
+  // One parent→child curve segment along the radial direction. X/Y read a node's
+  // position so callers can draw against live coords (v.x/v.y) or morph targets
+  // (v.tx/v.ty) — the single source of the link geometry linkPath and traceChain
+  // both used to transcribe by hand.
+  function linkSegment(g, p, c, X, Y) {
     if (p.depth === 0) {
       const r = RING0 * 0.45;
-      ctx.moveTo(p.x, p.y);
-      ctx.quadraticCurveTo(r * Math.cos(c.angle), r * Math.sin(c.angle), c.x, c.y);
+      g.quadraticCurveTo(r * Math.cos(c.angle), r * Math.sin(c.angle), X(c), Y(c));
       return;
     }
-    const Rp = Math.hypot(p.x, p.y), Rc = Math.hypot(c.x, c.y), m = 0.42;
+    const Rp = Math.hypot(X(p), Y(p)), Rc = Math.hypot(X(c), Y(c)), m = 0.42;
     const R1 = Rp + m * (Rc - Rp), R2 = Rc - m * (Rc - Rp);
+    g.bezierCurveTo(R1 * Math.cos(p.angle), R1 * Math.sin(p.angle), R2 * Math.cos(c.angle), R2 * Math.sin(c.angle), X(c), Y(c));
+  }
+  const liveX = (v) => v.x, liveY = (v) => v.y;
+  function linkPath(ctx, p, c) { // organic curl along the radial direction (live coords)
     ctx.moveTo(p.x, p.y);
-    ctx.bezierCurveTo(R1 * Math.cos(p.angle), R1 * Math.sin(p.angle), R2 * Math.cos(c.angle), R2 * Math.sin(c.angle), c.x, c.y);
+    linkSegment(ctx, p, c, liveX, liveY);
   }
 
   function drawBase() {
@@ -537,278 +513,307 @@ const RepoViz = (() => {
     const inView = (v) => Math.abs(v.x - cam.x) < mw && Math.abs(v.y - cam.y) < mh;
 
     bctx.lineWidth = 1 / cam.k;
-    if (sceneryQ() >= 2) { // settled links tinted toward the child's color — colored filaments
-      const linkGroups = new Map(); // dimmed children stroke in their own faint batch
-      for (const v of vis) {
-        if (!v.parentV || v.grow < 1) continue;
-        if (!inView(v) && !inView(v.parentV)) continue;
-        const col = colorOf(v);
-        const key = (dimOf(v) ? 'd' : 'n') + col;
-        let g = linkGroups.get(key);
-        if (!g) linkGroups.set(key, (g = { col, dim: dimOf(v), arr: [] }));
-        g.arr.push(v);
+
+    // Painter's-order passes — each is a self-contained pass over `vis` sharing
+    // the closure above (bctx, cam, inView). Call order IS paint order.
+    drawSettledLinks();
+    drawGrowingLinks();
+    drawTrailFallbacks();
+    drawSpotlight();
+    drawHubGlow();
+    drawNodes();
+    drawDecorationRings();
+    drawLabels();
+
+    function drawSettledLinks() {
+      if (sceneryQ() >= 2) { // settled links tinted toward the child's color — colored filaments
+        const linkGroups = new Map(); // dimmed children stroke in their own faint batch
+        for (const v of vis) {
+          if (!v.parentV || v.grow < 1) continue;
+          if (!inView(v) && !inView(v.parentV)) continue;
+          const col = colorOf(v);
+          const key = (dimOf(v) ? 'd' : 'n') + col;
+          let g = linkGroups.get(key);
+          if (!g) linkGroups.set(key, (g = { col, dim: dimOf(v), arr: [] }));
+          g.arr.push(v);
+        }
+        for (const g of linkGroups.values()) {
+          bctx.strokeStyle = linkTint(g.col);
+          bctx.globalAlpha = g.dim ? 0.15 : 1;
+          bctx.beginPath();
+          for (const v of g.arr) linkPath(bctx, v.parentV, v);
+          bctx.stroke();
+        }
+        bctx.globalAlpha = 1;
+      } else {
+        bctx.strokeStyle = withAlpha(THEME.link, 0.5);
+        for (const dimPass of [false, true]) {
+          bctx.globalAlpha = dimPass ? 0.15 : 1;
+          bctx.beginPath();
+          let any = false;
+          for (const v of vis) { // settled links: one batched stroke per dim state
+            if (!v.parentV || v.grow < 1) continue;
+            if (!inView(v) && !inView(v.parentV)) continue;
+            if (dimOf(v) !== dimPass) continue;
+            linkPath(bctx, v.parentV, v);
+            any = true;
+          }
+          if (any) bctx.stroke();
+        }
+        bctx.globalAlpha = 1;
       }
-      for (const g of linkGroups.values()) {
-        bctx.strokeStyle = linkTint(g.col);
-        bctx.globalAlpha = g.dim ? 0.15 : 1;
+    }
+
+    function drawGrowingLinks() {
+      bctx.strokeStyle = withAlpha(THEME.link, 0.5);
+      for (const v of vis) { // growing links fade in individually
+        if (!v.parentV || v.grow >= 1 || v.grow <= 0) continue;
+        bctx.globalAlpha = Math.min(1, v.grow) * (dimOf(v) ? 0.15 : 1);
         bctx.beginPath();
-        for (const v of g.arr) linkPath(bctx, v.parentV, v);
+        linkPath(bctx, v.parentV, v);
         bctx.stroke();
       }
       bctx.globalAlpha = 1;
-    } else {
-      bctx.strokeStyle = withAlpha(THEME.link, 0.5);
-      for (const dimPass of [false, true]) {
-        bctx.globalAlpha = dimPass ? 0.15 : 1;
+    }
+
+    function drawTrailFallbacks() {
+      if (hoverV && (REDUCED || sceneryQ() === 0)) { // static fallback — the animated trail lives on the fx layer
+        bctx.strokeStyle = withAlpha(trailsCfg().hover, 0.85);
+        bctx.lineWidth = 1.6 / cam.k;
         bctx.beginPath();
-        let any = false;
-        for (const v of vis) { // settled links: one batched stroke per dim state
-          if (!v.parentV || v.grow < 1) continue;
-          if (!inView(v) && !inView(v.parentV)) continue;
-          if (dimOf(v) !== dimPass) continue;
-          linkPath(bctx, v.parentV, v);
-          any = true;
+        for (let v = hoverV; v.parentV; v = v.parentV) linkPath(bctx, v.parentV, v);
+        bctx.stroke();
+      }
+      if (selChain && selChain.length > 1 && (REDUCED || sceneryQ() === 0)) { // selection fallback
+        bctx.strokeStyle = withAlpha(trailsCfg().selected, 0.9);
+        bctx.lineWidth = 1.8 / cam.k;
+        bctx.beginPath();
+        for (let i = 1; i < selChain.length; i++) linkPath(bctx, selChain[i - 1], selChain[i]);
+        bctx.stroke();
+      }
+    }
+
+    function drawSpotlight() {
+      if (spotChain && spotChain.length > 1) { // run-target spotlight from a hovered task card
+        bctx.strokeStyle = THEME.changed;
+        bctx.lineWidth = 1.8 / cam.k;
+        bctx.globalAlpha = 0.8;
+        bctx.beginPath();
+        for (let i = 1; i < spotChain.length; i++) linkPath(bctx, spotChain[i - 1], spotChain[i]);
+        bctx.stroke();
+        bctx.globalAlpha = 1;
+        const end = spotChain[spotChain.length - 1];
+        bctx.beginPath();
+        bctx.arc(end.x, end.y, end.r + 4 / cam.k, 0, 6.2832);
+        bctx.stroke();
+      }
+    }
+
+    function drawHubGlow() {
+      for (const v of vis) { // directory hub glow
+        if (!inView(v) || (!v.isAgg && v.n.type !== 'dir') || dimOf(v)) continue;
+        const s = v.r * 3.1 * Math.max(0, Math.min(1, v.grow));
+        if (s <= 0) continue;
+        const hubCol = colorOf(v);
+        VizScenery.clusterGas(bctx, v, hubCol); // soft gas pocket behind the whole cluster
+        bctx.globalAlpha = 0.15;
+        bctx.drawImage(sprite(hubCol), v.x - s, v.y - s, s * 2, s * 2);
+      }
+      bctx.globalAlpha = 1;
+
+      if (sceneryQ() >= 3) { // Ultra: big files get faint halos too — the whole map breathes
+        bctx.globalAlpha = 0.09;
+        for (const v of vis) {
+          if (!inView(v) || v.isAgg || v.n.type !== 'file' || v.grow < 1 || dimOf(v)) continue;
+          if (v.r * cam.k < 4) continue;
+          const s = v.r * 2.6;
+          bctx.drawImage(sprite(colorOf(v)), v.x - s, v.y - s, s * 2, s * 2);
         }
-        if (any) bctx.stroke();
+        bctx.globalAlpha = 1;
       }
-      bctx.globalAlpha = 1;
-    }
-    bctx.strokeStyle = withAlpha(THEME.link, 0.5);
-    for (const v of vis) { // growing links fade in individually
-      if (!v.parentV || v.grow >= 1 || v.grow <= 0) continue;
-      bctx.globalAlpha = Math.min(1, v.grow) * (dimOf(v) ? 0.15 : 1);
-      bctx.beginPath();
-      linkPath(bctx, v.parentV, v);
-      bctx.stroke();
-    }
-    bctx.globalAlpha = 1;
-
-    if (hoverV && (REDUCED || sceneryQ() === 0)) { // static fallback — the animated trail lives on the fx layer
-      bctx.strokeStyle = withAlpha(trailsCfg().hover, 0.85);
-      bctx.lineWidth = 1.6 / cam.k;
-      bctx.beginPath();
-      for (let v = hoverV; v.parentV; v = v.parentV) linkPath(bctx, v.parentV, v);
-      bctx.stroke();
-    }
-    if (selChain && selChain.length > 1 && (REDUCED || sceneryQ() === 0)) { // selection fallback
-      bctx.strokeStyle = withAlpha(trailsCfg().selected, 0.9);
-      bctx.lineWidth = 1.8 / cam.k;
-      bctx.beginPath();
-      for (let i = 1; i < selChain.length; i++) linkPath(bctx, selChain[i - 1], selChain[i]);
-      bctx.stroke();
     }
 
-    if (spotChain && spotChain.length > 1) { // run-target spotlight from a hovered task card
-      bctx.strokeStyle = THEME.changed;
-      bctx.lineWidth = 1.8 / cam.k;
-      bctx.globalAlpha = 0.8;
-      bctx.beginPath();
-      for (let i = 1; i < spotChain.length; i++) linkPath(bctx, spotChain[i - 1], spotChain[i]);
-      bctx.stroke();
-      bctx.globalAlpha = 1;
-      const end = spotChain[spotChain.length - 1];
-      bctx.beginPath();
-      bctx.arc(end.x, end.y, end.r + 4 / cam.k, 0, 6.2832);
-      bctx.stroke();
-    }
-
-    for (const v of vis) { // directory hub glow
-      if (!inView(v) || (!v.isAgg && v.n.type !== 'dir') || dimOf(v)) continue;
-      const s = v.r * 3.1 * Math.max(0, Math.min(1, v.grow));
-      if (s <= 0) continue;
-      const hubCol = colorOf(v);
-      VizScenery.clusterGas(bctx, v, hubCol); // soft gas pocket behind the whole cluster
-      bctx.globalAlpha = 0.15;
-      bctx.drawImage(sprite(hubCol), v.x - s, v.y - s, s * 2, s * 2);
-    }
-    bctx.globalAlpha = 1;
-
-    if (sceneryQ() >= 3) { // Ultra: big files get faint halos too — the whole map breathes
-      bctx.globalAlpha = 0.09;
+    function drawNodes() {
+      const groups = new Map(); // nodes batched per fill color (dimmed nodes batch separately)
       for (const v of vis) {
-        if (!inView(v) || v.isAgg || v.n.type !== 'file' || v.grow < 1 || dimOf(v)) continue;
-        if (v.r * cam.k < 4) continue;
-        const s = v.r * 2.6;
-        bctx.drawImage(sprite(colorOf(v)), v.x - s, v.y - s, s * 2, s * 2);
+        if (!inView(v) || v.grow <= 0) continue;
+        const ch = v.isAgg ? null : changedMap.get(v.n.path);
+        const col = ch ? (ch.kind === 'deleted' ? THEME.deleted : THEME.changed) : colorOf(v);
+        const dim = dimOf(v);
+        const key = (dim ? 'd' : 'n') + col;
+        let g = groups.get(key);
+        if (!g) groups.set(key, (g = { col, dim, arr: [] }));
+        g.arr.push(v);
       }
-      bctx.globalAlpha = 1;
-    }
-
-    const groups = new Map(); // nodes batched per fill color (dimmed nodes batch separately)
-    for (const v of vis) {
-      if (!inView(v) || v.grow <= 0) continue;
-      const ch = v.isAgg ? null : changedMap.get(v.n.path);
-      const col = ch ? (ch.kind === 'deleted' ? THEME.deleted : THEME.changed) : colorOf(v);
-      const dim = dimOf(v);
-      const key = (dim ? 'd' : 'n') + col;
-      let g = groups.get(key);
-      if (!g) groups.set(key, (g = { col, dim, arr: [] }));
-      g.arr.push(v);
-    }
-    const shape = sceneryQ() >= 2 ? VizScenery.shape() : 'circle';
-    const shaped = (v, r) => shape !== 'circle' && !v.isAgg && v.n.type === 'file' && r * cam.k > 3.4;
-    for (const g of groups.values()) {
-      bctx.fillStyle = g.col;
-      bctx.globalAlpha = g.dim ? 0.12 : 1;
-      bctx.beginPath();
-      for (const v of g.arr) {
-        const r = v.r * Math.min(1.25, Math.max(0, v.grow));
-        if (!g.dim && shaped(v, r)) continue; // drawn as a themed sprite below
-        bctx.moveTo(v.x + r, v.y);
-        bctx.arc(v.x, v.y, r, 0, 6.2832);
-      }
-      bctx.fill();
-      if (!g.dim && shape !== 'circle') { // themed node shapes: flakes, glyphs, gems, petals…
+      const shape = sceneryQ() >= 2 ? VizScenery.shape() : 'circle';
+      const shaped = (v, r) => shape !== 'circle' && !v.isAgg && v.n.type === 'file' && r * cam.k > 3.4;
+      for (const g of groups.values()) {
+        bctx.fillStyle = g.col;
+        bctx.globalAlpha = g.dim ? 0.12 : 1;
+        bctx.beginPath();
         for (const v of g.arr) {
           const r = v.r * Math.min(1.25, Math.max(0, v.grow));
-          if (!shaped(v, r)) continue;
-          const s = r * 1.5;
-          bctx.drawImage(VizScenery.nodeSprite(shape, g.col, v.n.path.length), v.x - s, v.y - s, s * 2, s * 2);
+          if (!g.dim && shaped(v, r)) continue; // drawn as a themed sprite below
+          bctx.moveTo(v.x + r, v.y);
+          bctx.arc(v.x, v.y, r, 0, 6.2832);
+        }
+        bctx.fill();
+        if (!g.dim && shape !== 'circle') { // themed node shapes: flakes, glyphs, gems, petals…
+          for (const v of g.arr) {
+            const r = v.r * Math.min(1.25, Math.max(0, v.grow));
+            if (!shaped(v, r)) continue;
+            const s = r * 1.5;
+            bctx.drawImage(VizScenery.nodeSprite(shape, g.col, v.n.path.length), v.x - s, v.y - s, s * 2, s * 2);
+          }
+        }
+      }
+      bctx.globalAlpha = 1;
+
+      if (sceneryQ() >= 2) { // white-hot cores — round nodes read as stars, not dots
+        bctx.fillStyle = THEME.core;
+        bctx.globalAlpha = 0.55;
+        bctx.beginPath();
+        for (const v of vis) {
+          if (!inView(v) || v.grow <= 0 || dimOf(v)) continue;
+          const r = v.r * Math.min(1.25, Math.max(0, v.grow));
+          if (r * cam.k < 4.5 || shaped(v, r)) continue;
+          const cr = r * 0.32;
+          bctx.moveTo(v.x + cr, v.y);
+          bctx.arc(v.x, v.y, cr, 0, 6.2832);
+        }
+        bctx.fill();
+        bctx.globalAlpha = 1;
+      }
+
+      if (sceneryQ() >= 1) { // diffraction spikes on the big bodies
+        const dirOnly = sceneryQ() < 3;
+        for (const v of vis) {
+          if (!inView(v) || v.grow < 0.9 || dimOf(v)) continue;
+          const isDir = v.isAgg || v.n.type === 'dir';
+          if (dirOnly && !isDir) continue;
+          if (v.r * cam.k < (isDir ? 7 : 8.5)) continue;
+          VizScenery.drawSpike(bctx, v, colorOf(v));
         }
       }
     }
-    bctx.globalAlpha = 1;
 
-    if (sceneryQ() >= 2) { // white-hot cores — round nodes read as stars, not dots
-      bctx.fillStyle = THEME.core;
-      bctx.globalAlpha = 0.55;
-      bctx.beginPath();
+    function drawDecorationRings() {
+      bctx.setLineDash([3 / cam.k, 3 / cam.k]); // "+N files" hubs get a dashed ring
+      bctx.strokeStyle = withAlpha(THEME.accent, 0.7);
+      bctx.lineWidth = 1 / cam.k;
       for (const v of vis) {
-        if (!inView(v) || v.grow <= 0 || dimOf(v)) continue;
-        const r = v.r * Math.min(1.25, Math.max(0, v.grow));
-        if (r * cam.k < 4.5 || shaped(v, r)) continue;
-        const cr = r * 0.32;
-        bctx.moveTo(v.x + cr, v.y);
-        bctx.arc(v.x, v.y, cr, 0, 6.2832);
+        if (!v.isAgg || !inView(v)) continue;
+        bctx.beginPath();
+        bctx.arc(v.x, v.y, v.r + 2.5, 0, 6.2832);
+        bctx.stroke();
       }
-      bctx.fill();
-      bctx.globalAlpha = 1;
+      bctx.setLineDash([]);
+
+      if (completed.size) { // green ring = a run updated this file
+        bctx.strokeStyle = THEME.success;
+        bctx.lineWidth = 1.4 / cam.k;
+        bctx.beginPath();
+        for (const p of completed) {
+          const v = vByPath.get(p);
+          if (!v || !inView(v)) continue;
+          bctx.moveTo(v.x + v.r + 2.4, v.y);
+          bctx.arc(v.x, v.y, v.r + 2.4, 0, 6.2832);
+        }
+        bctx.stroke();
+      }
+      if (dirtySet.size && (REDUCED || sceneryQ() === 0)) {
+        // the fx heartbeat is off in these modes — a steady ring stands in for the pulse
+        bctx.strokeStyle = THEME.changed;
+        bctx.lineWidth = 2 / cam.k;
+        bctx.globalAlpha = 0.65;
+        bctx.beginPath();
+        let dn = 0;
+        for (const p of dirtySet) {
+          if (dn++ >= 60) break;
+          const v = resolveV(p);
+          if (!v || !inView(v)) continue;
+          const r = v.r + 6 / cam.k;
+          bctx.moveTo(v.x + r, v.y);
+          bctx.arc(v.x, v.y, r, 0, 6.2832);
+        }
+        bctx.stroke();
+        bctx.globalAlpha = 1;
+      }
+      if (taskMarks.size) { // warn corner dot = the board has open tasks here
+        bctx.fillStyle = THEME.changed;
+        bctx.beginPath();
+        for (const p of taskMarks.keys()) {
+          const v = resolveV(p);
+          if (!v || !inView(v)) continue;
+          const r = Math.max(2.2 / cam.k, v.r * 0.3), ox = v.r * 0.8 + r;
+          bctx.moveTo(v.x + ox + r, v.y - ox);
+          bctx.arc(v.x + ox, v.y - ox, r, 0, 6.2832);
+        }
+        bctx.fill();
+      }
+      if (pinSet.size) { // accent dot above the node = pinned
+        bctx.fillStyle = THEME.accent;
+        bctx.beginPath();
+        for (const p of pinSet) {
+          const v = resolveV(p);
+          if (!v || !inView(v)) continue;
+          const r = Math.max(2 / cam.k, v.r * 0.25), oy = v.r + 3 / cam.k + r;
+          bctx.moveTo(v.x + r, v.y - oy);
+          bctx.arc(v.x, v.y - oy, r, 0, 6.2832);
+        }
+        bctx.fill();
+      }
+      if (hoverV) {
+        bctx.strokeStyle = THEME.accent;
+        bctx.lineWidth = 1.6 / cam.k;
+        bctx.beginPath();
+        bctx.arc(hoverV.x, hoverV.y, hoverV.r + 3 / cam.k, 0, 6.2832);
+        bctx.stroke();
+        bctx.globalAlpha = 0.3; // soft outer aura
+        bctx.lineWidth = 4.5 / cam.k;
+        bctx.beginPath();
+        bctx.arc(hoverV.x, hoverV.y, hoverV.r + 7 / cam.k, 0, 6.2832);
+        bctx.stroke();
+        bctx.globalAlpha = 1;
+      }
     }
 
-    if (sceneryQ() >= 1) { // diffraction spikes on the big bodies
-      const dirOnly = sceneryQ() < 3;
+    function drawLabels() {
+      bctx.setTransform(dpr, 0, 0, dpr, 0, 0); // labels stay pixel-crisp in screen space
+      const cands = [];
       for (const v of vis) {
-        if (!inView(v) || v.grow < 0.9 || dimOf(v)) continue;
+        if (!inView(v) || v.grow < 0.95) continue;
+        if (dimOf(v)) continue; // filtered-out files keep their dots, lose their labels
         const isDir = v.isAgg || v.n.type === 'dir';
-        if (dirOnly && !isDir) continue;
-        if (v.r * cam.k < (isDir ? 7 : 8.5)) continue;
-        VizScenery.drawSpike(bctx, v, colorOf(v));
+        const sr = v.r * cam.k;
+        if (sr < (isDir ? 5 : 4)) continue;
+        cands.push([isDir ? sr + 1000 : sr, v, isDir]);
       }
-    }
-
-    bctx.setLineDash([3 / cam.k, 3 / cam.k]); // "+N files" hubs get a dashed ring
-    bctx.strokeStyle = withAlpha(THEME.accent, 0.7);
-    bctx.lineWidth = 1 / cam.k;
-    for (const v of vis) {
-      if (!v.isAgg || !inView(v)) continue;
-      bctx.beginPath();
-      bctx.arc(v.x, v.y, v.r + 2.5, 0, 6.2832);
-      bctx.stroke();
-    }
-    bctx.setLineDash([]);
-
-    if (completed.size) { // green ring = a run updated this file
-      bctx.strokeStyle = THEME.success;
-      bctx.lineWidth = 1.4 / cam.k;
-      bctx.beginPath();
-      for (const p of completed) {
-        const v = vByPath.get(p);
-        if (!v || !inView(v)) continue;
-        bctx.moveTo(v.x + v.r + 2.4, v.y);
-        bctx.arc(v.x, v.y, v.r + 2.4, 0, 6.2832);
+      cands.sort((a, b) => b[0] - a[0]);
+      bctx.textBaseline = 'middle';
+      const placed = []; // greedy overlap rejection, highest-priority labels win
+      let shown = 0;
+      for (const [, v, isDir] of cands) {
+        if (shown >= LABEL_CAP) break;
+        const [sx, sy] = screenOf(v.x, v.y);
+        const label = v.isAgg ? '+' + v.aggCount.toLocaleString() : v.n.name + (isDir ? '/' : '');
+        bctx.font = (isDir ? '600 11px ' : '10px ') + THEME.mono;
+        const lx = sx + v.r * cam.k + 5;
+        const lw = bctx.measureText(label).width;
+        const box = [lx - 2, sy - 7, lx + lw + 2, sy + 7];
+        let hit = false;
+        for (const b of placed) {
+          if (box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1]) { hit = true; break; }
+        }
+        if (hit) continue;
+        placed.push(box);
+        shown++;
+        bctx.lineWidth = 3;
+        bctx.strokeStyle = THEME.labelHalo;
+        bctx.strokeText(label, lx, sy);
+        bctx.fillStyle = isDir ? THEME.labelDir : THEME.labelFile;
+        bctx.fillText(label, lx, sy);
       }
-      bctx.stroke();
-    }
-    if (dirtySet.size && (REDUCED || sceneryQ() === 0)) {
-      // the fx heartbeat is off in these modes — a steady ring stands in for the pulse
-      bctx.strokeStyle = THEME.changed;
-      bctx.lineWidth = 2 / cam.k;
-      bctx.globalAlpha = 0.65;
-      bctx.beginPath();
-      let dn = 0;
-      for (const p of dirtySet) {
-        if (dn++ >= 60) break;
-        const v = resolveV(p);
-        if (!v || !inView(v)) continue;
-        const r = v.r + 6 / cam.k;
-        bctx.moveTo(v.x + r, v.y);
-        bctx.arc(v.x, v.y, r, 0, 6.2832);
-      }
-      bctx.stroke();
-      bctx.globalAlpha = 1;
-    }
-    if (taskMarks.size) { // warn corner dot = the board has open tasks here
-      bctx.fillStyle = THEME.changed;
-      bctx.beginPath();
-      for (const p of taskMarks.keys()) {
-        const v = resolveV(p);
-        if (!v || !inView(v)) continue;
-        const r = Math.max(2.2 / cam.k, v.r * 0.3), ox = v.r * 0.8 + r;
-        bctx.moveTo(v.x + ox + r, v.y - ox);
-        bctx.arc(v.x + ox, v.y - ox, r, 0, 6.2832);
-      }
-      bctx.fill();
-    }
-    if (pinSet.size) { // accent dot above the node = pinned
-      bctx.fillStyle = THEME.accent;
-      bctx.beginPath();
-      for (const p of pinSet) {
-        const v = resolveV(p);
-        if (!v || !inView(v)) continue;
-        const r = Math.max(2 / cam.k, v.r * 0.25), oy = v.r + 3 / cam.k + r;
-        bctx.moveTo(v.x + r, v.y - oy);
-        bctx.arc(v.x, v.y - oy, r, 0, 6.2832);
-      }
-      bctx.fill();
-    }
-    if (hoverV) {
-      bctx.strokeStyle = THEME.accent;
-      bctx.lineWidth = 1.6 / cam.k;
-      bctx.beginPath();
-      bctx.arc(hoverV.x, hoverV.y, hoverV.r + 3 / cam.k, 0, 6.2832);
-      bctx.stroke();
-      bctx.globalAlpha = 0.3; // soft outer aura
-      bctx.lineWidth = 4.5 / cam.k;
-      bctx.beginPath();
-      bctx.arc(hoverV.x, hoverV.y, hoverV.r + 7 / cam.k, 0, 6.2832);
-      bctx.stroke();
-      bctx.globalAlpha = 1;
-    }
-
-    bctx.setTransform(dpr, 0, 0, dpr, 0, 0); // labels stay pixel-crisp in screen space
-    const cands = [];
-    for (const v of vis) {
-      if (!inView(v) || v.grow < 0.95) continue;
-      if (dimOf(v)) continue; // filtered-out files keep their dots, lose their labels
-      const isDir = v.isAgg || v.n.type === 'dir';
-      const sr = v.r * cam.k;
-      if (sr < (isDir ? 5 : 4)) continue;
-      cands.push([isDir ? sr + 1000 : sr, v, isDir]);
-    }
-    cands.sort((a, b) => b[0] - a[0]);
-    bctx.textBaseline = 'middle';
-    const placed = []; // greedy overlap rejection, highest-priority labels win
-    let shown = 0;
-    for (const [, v, isDir] of cands) {
-      if (shown >= LABEL_CAP) break;
-      const [sx, sy] = screenOf(v.x, v.y);
-      const label = v.isAgg ? '+' + v.aggCount.toLocaleString() : v.n.name + (isDir ? '/' : '');
-      bctx.font = (isDir ? '600 11px ' : '10px ') + THEME.mono;
-      const lx = sx + v.r * cam.k + 5;
-      const lw = bctx.measureText(label).width;
-      const box = [lx - 2, sy - 7, lx + lw + 2, sy + 7];
-      let hit = false;
-      for (const b of placed) {
-        if (box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1]) { hit = true; break; }
-      }
-      if (hit) continue;
-      placed.push(box);
-      shown++;
-      bctx.lineWidth = 3;
-      bctx.strokeStyle = THEME.labelHalo;
-      bctx.strokeText(label, lx, sy);
-      bctx.fillStyle = isDir ? THEME.labelDir : THEME.labelFile;
-      bctx.fillText(label, lx, sy);
     }
   }
 
@@ -860,20 +865,10 @@ const RepoViz = (() => {
     return chain.length > 1 ? chain : null;
   }
 
-  function traceChain(g, c, live) { // same curves as linkPath, one continuous subpath root->leaf
+  function traceChain(g, c, live) { // same segments as linkPath, one continuous subpath root->leaf
     const X = (v) => (live ? v.x : v.tx), Y = (v) => (live ? v.y : v.ty);
     g.moveTo(X(c[0]), Y(c[0]));
-    for (let i = 1; i < c.length; i++) {
-      const p = c[i - 1], k = c[i];
-      if (p.depth === 0) {
-        const r = RING0 * 0.45;
-        g.quadraticCurveTo(r * Math.cos(k.angle), r * Math.sin(k.angle), X(k), Y(k));
-      } else {
-        const Rp = Math.hypot(X(p), Y(p)), Rc = Math.hypot(X(k), Y(k)), m = 0.42;
-        const R1 = Rp + m * (Rc - Rp), R2 = Rc - m * (Rc - Rp);
-        g.bezierCurveTo(R1 * Math.cos(p.angle), R1 * Math.sin(p.angle), R2 * Math.cos(k.angle), R2 * Math.sin(k.angle), X(k), Y(k));
-      }
-    }
+    for (let i = 1; i < c.length; i++) linkSegment(g, c[i - 1], c[i], X, Y);
   }
 
   function streamGeom(s) {

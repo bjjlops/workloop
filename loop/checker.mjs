@@ -88,7 +88,7 @@ Then, if FAIL, a short bullet list of the specific problems for the writer to fi
  *  verifyMode 'worktree' | 'main-checkout-fallback' (recorded in notes only)
  */
 export async function check(o) {
-  const { repo, cwd, base, head = null, task = null, verifiers = {}, engine = null, env = childEnv(), emit = () => {}, staticOnly = false, verifyMode = 'worktree' } = o;
+  const { repo, cwd, base, head = null, task = null, verifiers = {}, engine = null, env = childEnv(), emit = () => {}, staticOnly = false, verifyMode = 'worktree', verifyTimeoutMs = 10 * 60 * 1000 } = o;
   const notes = [];
   const files = changedFiles(cwd, base, head);
   emit({ type: 'status', message: `Checker: ${files.length} changed file(s)` });
@@ -110,7 +110,7 @@ export async function check(o) {
   for (const [label, cmd] of Object.entries(verifiers)) {
     if (!runnable(cmd, scripts)) continue;
     emit({ type: 'status', message: `Checker verifying: ${cmd}` });
-    const r = runShell(cmd, { cwd, env });
+    const r = runShell(cmd, { cwd, env, timeout: verifyTimeoutMs });
     const ok = r.code === 0;
     notes.push({ stage: `verify:${label}`, ok, detail: ok ? `${cmd} passed` : `${cmd} failed (${verifyMode}):\n${tail(r.out + '\n' + r.err, 12)}` });
     if (!ok) emit({ type: 'status', message: `Verifier failed: ${cmd}` });

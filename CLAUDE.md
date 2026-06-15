@@ -56,12 +56,15 @@ galaxy map. It shells out to `claude`, `git`, and `gh`; it has no runtime deps.
 
 ## Verify requirements
 
-workloop has **no unit-test framework**. The de-facto gate is **`node --check` on
-every changed `.mjs`** (`npm run check:syntax`) plus a boot smoke test
-(`npm start`). For a *target* repo, the gate is its configured verifier commands
-(`typecheck`/`test`/`lint`/`build` in workloop.config.json) — the checker runs
-the runnable ones and skips missing npm scripts (never treats a missing script
-as a failure).
+workloop's own gate is **`npm run check`** = `npm run lint` (`scripts/check.mjs`,
+which runs `node --check` on every source `.mjs`) **+ `npm test`** (`node --test`
+over `test/*.test.mjs`, the zero-dep test net for pure helpers in `cards.mjs`,
+`env.mjs`, `chat.mjs`, …). Run it before every commit; add a test next to an
+existing one when you add a pure helper. A boot smoke test (`npm start`) covers
+wiring the unit tests can't. For a *target* repo, the gate is its configured
+verifier commands (`typecheck`/`test`/`lint`/`build` in workloop.config.json) —
+the checker runs the runnable ones and skips missing npm scripts (never treats a
+missing script as a failure).
 
 ## The loop system (built here)
 

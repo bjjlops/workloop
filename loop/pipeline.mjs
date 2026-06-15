@@ -27,6 +27,7 @@ import * as plan from './plan.mjs';
 import * as checker from './checker.mjs';
 import * as memory from './memory.mjs';
 import * as feedback from './feedback.mjs';
+import { BACKLOG_UNCHECKED_RE } from '../cards.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = dirname(__dirname);
@@ -84,7 +85,7 @@ function tickBacklog(cwd, task) {
   try {
     const blFile = join(cwd, cfg.sources?.backlog || 'BACKLOG.md');
     const lines = readFileSync(blFile, 'utf8').split('\n');
-    const matches = (l) => { const m = (l || '').match(/^\s*[-*]\s+\[ \]\s+(.*)$/); return !!m && m[1].trim() === task.title; };
+    const matches = (l) => { const m = (l || '').match(BACKLOG_UNCHECKED_RE); return !!m && m[1].trim() === task.title; };
     const i = (task.line && matches(lines[task.line - 1])) ? task.line - 1 : lines.findIndex(matches);
     if (i >= 0) { lines[i] = lines[i].replace('[ ]', '[x]'); writeFileSync(blFile, lines.join('\n')); }
   } catch { /* no backlog file — nothing to tick */ }
@@ -98,8 +99,9 @@ async function runWriter(task, wt, engine, promptParts) {
     prompt: buildWriterPrompt(task, promptParts),
     allowedTools: cfg.agent.allowedTools, permissionMode: cfg.agent.permissionMode,
     maxTurns: cfg.agent.maxTurns, stream: cfg.agent.stream !== false,
-    cwd: wt.path, root: wt.path, env: ENV, emit,
+    cwd: wt.path, root: wt.path, env: ENV, emit, timeoutMs: cfg.agent?.timeoutMs || 20 * 60 * 1000,
   });
+  if (res.timedOut) return { ok: false, reason: 'writer exceeded the agent time budget' };
   if (res.error) return { ok: false, reason: res.error };
   if (res.sawAuthError) return { ok: false, reason: 'engine is not logged in — open Terminal, run `claude`, /login, then Retry', auth: true };
   return { ok: true };
@@ -188,6 +190,9 @@ function commitWorktree(task, wt) {
 
     const passed = lastCheck.ok;
     const changed = lastCheck.files || [];
+    // verified only when a real verifier gate actually ran and passed (not the
+    // node_modules-link fallback, and not a repo with no verifier configured).
+    const verified = passed && lastCheck.notes.some((n) => n.stage.startsWith('verify:') && n.ok);
 
     // ---- L2.3: merge/PR (never auto-merge into the working branch) ----
     emit({ type: 'phase', phase: 'merge' });
@@ -203,7 +208,7 @@ function commitWorktree(task, wt) {
       note = `checker still failing after ${maxRetries} retr${maxRetries === 1 ? 'y' : 'ies'} — branch left for inspection: ${checker.formatNotes(lastCheck.notes)}`;
     }
 
-    await finish(passed, { branch, pr, note, retries: attempt, notes: passed ? 'none' : checker.formatNotes(lastCheck.notes), files: changed });
+    await finish(passed, { branch, pr, note, verified, retries: attempt, notes: passed ? 'none' : checker.formatNotes(lastCheck.notes), files: changed });
   } catch (e) {
     await finish(false, { reason: e.message });
   }

@@ -1,0 +1,24 @@
+{
+  "_comment": "Sample config. The real workloop.config.json is personal and gitignored (auto-created on first boot). Copy this to workloop.config.json to point Workloop at itself and dogfood the fix-loop: its verifier runs the zero-dependency `npm run lint` (syntax gate over every source file) and `npm test` (node:test suite). Adjust repoPath to your checkout.",
+  "repoPath": "/ABSOLUTE/PATH/TO/workloop",
+  "branchPrefix": "workloop",
+  "openPR": false,
+  "verifier": {
+    "typecheck": "",
+    "test": "npm test",
+    "lint": "npm run lint",
+    "build": ""
+  },
+  "sources": { "backlog": "BACKLOG.md", "todos": true, "typeErrors": true, "failingTests": true, "lint": true, "build": false },
+  "dev": { "command": "npm start", "url": "" },
+  "agent": {
+    "command": "claude --model claude-opus-4-8 --effort max",
+    "maxTurns": 30,
+    "allowedTools": "Read,Edit,Bash",
+    "permissionMode": "acceptEdits",
+    "stream": true,
+    "timeoutMs": 1200000,
+    "verifyTimeoutMs": 600000
+  },
+  "chat": { "allowedTools": "Read,Glob,Grep", "maxTurns": 15, "timeoutMs": 180000 }
+}
