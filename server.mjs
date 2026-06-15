@@ -17,6 +17,7 @@ import * as Handoffs from './handoffs.mjs';
 import * as Findings from './findings.mjs';
 import * as Commands from './commands.mjs';
 import { recordWrite, watchFile, unwatchFile, writeJsonAtomic } from './watch.mjs';
+import { backlogCard, findingCard, recomputeCounts, BACKLOG_UNCHECKED_RE } from './cards.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 4317;
@@ -35,7 +36,7 @@ const DEFAULT_CFG = {
   dev: { command: 'npm run dev', url: '' },
   // note: the structured engine fields (bin/model/effort/flags) are deliberately
   // NOT defaulted — their absence tells the UI to migrate a legacy one-string command
-  agent: { command: 'claude', maxTurns: 30, allowedTools: 'Read,Edit,Bash', permissionMode: 'acceptEdits', stream: true },
+  agent: { command: 'claude', maxTurns: 30, allowedTools: 'Read,Edit,Bash', permissionMode: 'acceptEdits', stream: true, timeoutMs: 1200000, verifyTimeoutMs: 600000 },
   chat: { allowedTools: 'Read,Glob,Grep', maxTurns: 15, timeoutMs: 180000 },
   commands: [],
   ui: { theme: 'mission-control', ambientFx: true },
@@ -65,9 +66,30 @@ const readTasks = () => {
   try { return JSON.parse(readFileSync(tasksPath, 'utf8')); }
   catch { return { meta: { repo: null, counts: { needsWork: 0, shouldImplement: 0 }, notes: [] }, tasks: [] }; }
 };
+const MAX_BODY = 2 * 1024 * 1024; // 2 MB — generous for config/chat, a hard stop for abuse
 const readBody = (req) => new Promise((res) => {
-  let b = ''; req.on('data', (d) => (b += d)); req.on('end', () => { try { res(JSON.parse(b || '{}')); } catch { res({}); } });
+  let b = '', over = false;
+  req.on('data', (d) => {
+    if (over) return;
+    b += d;
+    if (b.length > MAX_BODY) { over = true; try { req.destroy(); } catch { /* already closed */ } res({}); }
+  });
+  req.on('end', () => { if (over) return; try { res(JSON.parse(b || '{}')); } catch { res({}); } });
 });
+
+// Workloop is a localhost-only tool that can execute shell commands. Two guards
+// keep it that way: the Host must be a loopback name (blocks DNS-rebinding from
+// a malicious site), and any Origin present must also be loopback (blocks a
+// cross-site page from driving the API — CSRF→RCE). Both run before any handler.
+const isLoopbackHost = (hostHeader) => {
+  if (!hostHeader) return false;
+  const h = String(hostHeader).replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+};
+const originAllowed = (origin) => {
+  if (!origin) return true; // same-origin GET, EventSource, and curl send no Origin
+  try { return isLoopbackHost(new URL(origin).host); } catch { return false; }
+};
 const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 // argv git — no shell startup, no quoting rules, identical on every OS
 const gitIn = (cwd, args, timeout = 20000) =>
@@ -96,19 +118,30 @@ function mergeCfg(base, patch) {
   return out;
 }
 
+// Cached: /api/status (polled every 4s) calls this, and the macOS keychain probe
+// is a synchronous `security` spawn — uncached it would hammer the event loop.
+let loginCache = { at: 0, signedIn: null };
+let lastPathRefresh = 0; // throttles the fresh login-PATH shell spawn on /api/status
+const LOGIN_TTL = 30000;
 function loginState() {
   // Best-effort sign-in detection: Claude Code keeps OAuth credentials in the
   // macOS Keychain ("Claude Code-credentials"), or ~/.claude/.credentials.json
   // on other installs. Existence ≈ signed in; an expired token still surfaces
   // reactively at run time.
+  if (Date.now() - loginCache.at < LOGIN_TTL) return loginCache.signedIn;
+  let v = null;
   try {
     if (process.platform === 'darwin') {
       const r = spawnSync('security', ['find-generic-password', '-s', 'Claude Code-credentials'], { encoding: 'utf8', timeout: 5000 });
-      if (r.status === 0) return true;
+      if (r.status === 0) v = true;
     }
-    const p = join(homedir(), '.claude', '.credentials.json');
-    return existsSync(p) && readFileSync(p, 'utf8').trim().length > 2;
-  } catch { return null; } // unknown — don't claim either way
+    if (v === null) {
+      const p = join(homedir(), '.claude', '.credentials.json');
+      v = existsSync(p) && readFileSync(p, 'utf8').trim().length > 2;
+    }
+  } catch { v = null; } // unknown — don't claim either way
+  loginCache = { at: Date.now(), signedIn: v };
+  return v;
 }
 
 // gh CLI detection for the Connections panel — cached and refreshed in the
@@ -278,7 +311,10 @@ function pushFailureMessage(stderr) {
   return (s.trim().split('\n').pop() || 'push failed').slice(0, 200);
 }
 
-function generateCommitMessage(repoPath) {
+// async: a spawnSync claude here blocked the whole SSE bus for up to 35s while
+// the model wrote the message. Spawns through Platform.spawnTool so npm's .cmd
+// shim resolves on Windows (a raw spawnSync of the shim never did).
+async function generateCommitMessage(repoPath) {
   const porcelain = (gitIn(repoPath, ['status', '--porcelain']).stdout || '');
   const lines = porcelain.split('\n').filter(Boolean);
   const names = lines.map((l) => l.slice(3).trim());
@@ -290,10 +326,19 @@ function generateCommitMessage(repoPath) {
     const stat = (gitIn(repoPath, ['diff', 'HEAD', '--stat']).stdout || '').trim().split('\n').slice(-20).join('\n');
     const diff = (gitIn(repoPath, ['diff', 'HEAD']).stdout || '').slice(0, 6000);
     const prompt = `Write a single-line conventional commit message (max 70 characters) for these changes. Output ONLY the message itself — no quotes, no markdown, no explanation.\n\nChanged files:\n${names.join('\n')}\n\nDiff stat:\n${stat}\n\nDiff (truncated):\n${diff}`;
-    const r = spawnSync(claude, ['-p', prompt], { encoding: 'utf8', env: childEnv(), timeout: 35000, cwd: repoPath });
-    const line = (r.stdout || '').split('\n').map((s) => s.trim()).filter(Boolean)[0] || '';
+    const out = await new Promise((resolve) => {
+      let child, sout = '';
+      try { child = Platform.spawnTool(claude, ['-p', prompt], { env: childEnv(), cwd: repoPath, stdio: ['ignore', 'pipe', 'pipe'] }); }
+      catch { return resolve(null); }
+      const timer = setTimeout(() => { try { Platform.killTree(child, 'SIGKILL'); } catch { /* gone */ } resolve(null); }, 35000);
+      child.stdout.on('data', (d) => (sout += d));
+      child.on('error', () => { clearTimeout(timer); resolve(null); });
+      child.on('close', (code) => { clearTimeout(timer); resolve(code === 0 ? sout : null); });
+    });
+    if (out == null) return fallback();
+    const line = out.split('\n').map((s) => s.trim()).filter(Boolean)[0] || '';
     const clean = line.replace(/^["'`]+|["'`]+$/g, '').slice(0, 72);
-    return (r.status === 0 && clean.length > 4) ? clean : fallback();
+    return clean.length > 4 ? clean : fallback();
   } catch { return fallback(); }
 }
 
@@ -550,6 +595,18 @@ process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 process.on('SIGHUP', shutdown); // closing the Terminal window must not orphan the dev tree
 
+// A long-running local server must survive a stray async throw rather than
+// black-holing — log it on the bus and to stderr, then keep serving.
+process.on('unhandledRejection', (reason) => {
+  const msg = reason && reason.message ? reason.message : String(reason);
+  console.error('[workloop] unhandled rejection (kept alive):', reason);
+  try { publish('server.error', `unhandled rejection: ${msg}`); } catch { /* bus down */ }
+});
+process.on('uncaughtException', (err) => {
+  console.error('[workloop] uncaught exception (kept alive):', err);
+  try { publish('server.error', `uncaught exception: ${err && err.message ? err.message : err}`); } catch { /* bus down */ }
+});
+
 // ---------- static files ----------
 // Read-per-request with no-store: edits to the dashboard never need a server
 // restart, and a local tool has no use for HTTP caching.
@@ -595,7 +652,7 @@ function queueGoals(cfg, titles) {
   const file = join(cfg.repoPath, rel);
   let cur = existsSync(file) ? readFileSync(file, 'utf8') : '# Backlog\n\n';
   if (!cur.endsWith('\n')) cur += '\n';
-  const open = new Set(cur.split('\n').map((l) => l.match(/^\s*[-*]\s+\[ \]\s+(.*)$/)).filter(Boolean).map((m) => m[1].trim()));
+  const open = new Set(cur.split('\n').map((l) => l.match(BACKLOG_UNCHECKED_RE)).filter(Boolean).map((m) => m[1].trim()));
   const queued = [], dup = [];
   for (const raw of titles) {
     const clean = String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 200);
@@ -618,21 +675,13 @@ function queueGoals(cfg, titles) {
 function boardAddBacklog(cfg, rel, queued) {
   const state = readTasks();
   if (state.meta?.repo !== cfg.repoPath) return null;
-  const sid = (...p) => createHash('sha1').update(p.join('|')).digest('hex').slice(0, 8);
   state.tasks = state.tasks || [];
   for (const q of queued) {
-    const tid = sid('backlog', String(q.line - 1), q.title); // scanner ids by 0-based line
-    if (state.tasks.some((t) => t.id === tid)) continue;
-    state.tasks.push({
-      id: tid, source: 'backlog', column: 'should-implement',
-      title: q.title, file: rel, line: q.line,
-      detail: `From ${rel}`, verifiable: false, verifyCmd: null,
-    });
+    const card = backlogCard(rel, q.line - 1, q.title); // scanner ids by 0-based line
+    if (state.tasks.some((t) => t.id === card.id)) continue;
+    state.tasks.push(card);
   }
-  state.meta.counts = {
-    needsWork: state.tasks.filter((t) => t.column === 'needs-work').length,
-    shouldImplement: state.tasks.filter((t) => t.column === 'should-implement').length,
-  };
+  state.meta.counts = recomputeCounts(state.tasks);
   state.meta.generatedAt = new Date().toISOString(); // bump so the client's render dedup re-renders
   writeJsonAtomic(tasksPath, state);
   return state;
@@ -719,37 +768,24 @@ function tailForeignEvents(abs) {
 function syncBacklogIntoTasks(cfg, content) {
   const state = readTasks();
   if (state.meta?.repo !== cfg.repoPath) return null; // board belongs to another repo — a real scan owns this
-  const sid = (...p) => createHash('sha1').update(p.join('|')).digest('hex').slice(0, 8);
   const rel = cfg.sources?.backlog || 'BACKLOG.md';
   const next = [];
   String(content || '').split('\n').forEach((ln, i) => {
-    const m = ln.match(/^\s*[-*]\s+\[ \]\s+(.*)$/);
-    if (m && m[1].trim()) next.push({
-      id: sid('backlog', String(i), m[1]), source: 'backlog', column: 'should-implement',
-      title: m[1].trim(), file: rel, line: i + 1,
-      detail: `From ${rel}`, verifiable: false, verifyCmd: null,
-    });
+    const m = ln.match(BACKLOG_UNCHECKED_RE);
+    if (m && m[1].trim()) next.push(backlogCard(rel, i, m[1]));
   });
   const cur = (state.tasks || []).filter((t) => t.source === 'backlog');
   if (JSON.stringify(cur) === JSON.stringify(next)) return null; // no effective change
   state.tasks = [...(state.tasks || []).filter((t) => t.source !== 'backlog'), ...next];
-  state.meta.counts = {
-    needsWork: state.tasks.filter((t) => t.column === 'needs-work').length,
-    shouldImplement: state.tasks.filter((t) => t.column === 'should-implement').length,
-  };
+  state.meta.counts = recomputeCounts(state.tasks);
   state.meta.generatedAt = new Date().toISOString();
   writeJsonAtomic(tasksPath, state);
   return state;
 }
 
-// findingCard: the EXACT task shape scanner.mjs emits for a finding — the
-// equality guard below depends on surgical writes and scans agreeing byte-
-// for-byte, or two instances would rewrite tasks.json at each other forever.
-const findingCard = (f) => ({
-  id: f.id.slice(3), source: 'finding', origin: f.source, findingId: f.id,
-  column: 'needs-work', title: f.title, file: f.file || null, line: f.line || null,
-  detail: f.detail || `reported by ${f.source}`, verifiable: false, verifyCmd: null,
-});
+// findingCard (the EXACT task shape scanner.mjs also emits) and recomputeCounts
+// live in cards.mjs — the equality guard below depends on surgical writes and
+// scans agreeing byte-for-byte, so the builder must be one shared definition.
 
 // syncFindingsIntoTasks: re-derive every finding card from the store —
 // shared by landFinding (new report), run-success resolution, discard, and
@@ -761,10 +797,7 @@ function syncFindingsIntoTasks(cfg) {
   const cur = (state.tasks || []).filter((t) => t.source === 'finding');
   if (JSON.stringify(cur) === JSON.stringify(next)) return null; // no effective change — don't bump generatedAt
   state.tasks = [...(state.tasks || []).filter((t) => t.source !== 'finding'), ...next];
-  state.meta.counts = {
-    needsWork: state.tasks.filter((t) => t.column === 'needs-work').length,
-    shouldImplement: state.tasks.filter((t) => t.column === 'should-implement').length,
-  };
+  state.meta.counts = recomputeCounts(state.tasks);
   state.meta.generatedAt = new Date().toISOString();
   writeJsonAtomic(tasksPath, state);
   return state;
@@ -865,8 +898,26 @@ function foreignRunLock() {
   if (!alive) { try { unlinkSync(runLockPath); } catch { /* raced */ } return null; }
   return l;
 }
+// Atomically acquire the cross-instance write lock. Returns true on success, or
+// the blocking lock object when another LIVE instance owns it. Exclusive create
+// (flag 'wx') closes the check-then-write race where two instances could each
+// pass foreignRunLock() and then both write the lock.
+function acquireRunLock(taskId, pid) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      writeFileSync(runLockPath, JSON.stringify({ pid, port: String(PORT), taskId, at: Date.now() }), { flag: 'wx' });
+      return true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') return true; // unexpected fs error — don't hard-block a run on it
+      const held = foreignRunLock(); // null if it's ours/stale/dead (and clears a dead foreign lock)
+      if (held) return held;         // a live foreign instance owns the tree
+      try { unlinkSync(runLockPath); } catch { /* raced */ } // our own stale lock — drop and retry
+    }
+  }
+  return true; // lock kept reappearing (rare) — proceed rather than wedge
+}
 const writeRunLock = (taskId, pid) => {
-  try { writeFileSync(runLockPath, JSON.stringify({ pid, port: String(PORT), taskId, at: Date.now() })); } catch { /* best-effort */ }
+  try { writeJsonAtomic(runLockPath, { pid, port: String(PORT), taskId, at: Date.now() }); } catch { /* best-effort */ }
 };
 const clearRunLock = () => {
   try {
@@ -875,10 +926,37 @@ const clearRunLock = () => {
   } catch { /* gone */ }
 };
 
+// Single source of truth for "is a writer active in THIS instance?" — runs,
+// saved commands, and write-capable chat all exclude each other (one writer per
+// tree). Returns a human reason or null so callers can answer 409 consistently.
+const writerBlockReason = () =>
+  activeRuns > 0 ? 'an agent run is active'
+    : Commands.running() ? 'a saved command is running'
+      : Chat.busyWriting() ? 'a write-capable chat turn is active'
+        : null;
+const writerBusy = () => writerBlockReason() !== null;
+
 // ---------- http ----------
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+  // localhost-only guard: block DNS-rebinding (non-loopback Host) and cross-site
+  // drivers (foreign Origin) before any handler — see isLoopbackHost/originAllowed.
+  if (!isLoopbackHost(req.headers.host) || !originAllowed(req.headers.origin)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    return res.end('forbidden: workloop is localhost-only');
+  }
+  try {
+    await dispatch(req, res, url);
+  } catch (e) {
+    // one bad handler must not hang the request or take down the server
+    publish('server.error', `request handler threw: ${e.message}`, { path: url.pathname });
+    if (!res.headersSent) { try { json(res, 500, { error: 'internal error' }); } catch { /* socket gone */ } }
+    else { try { res.end(); } catch { /* gone */ } }
+  }
+});
 
+// Route dispatch — a long if-ladder today; Phase 4 will table-drive it.
+async function dispatch(req, res, url) {
   if (!url.pathname.startsWith('/api/') && serveStatic(req, res, url)) return;
 
   if (req.method === 'GET' && url.pathname === '/api/events') return busAttach(req, res, url, busSnapshot());
@@ -1018,7 +1096,9 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/status') {
     const fresh = url.searchParams.get('fresh') === '1';
-    if (fresh) loginPath(true);
+    // refresh the login PATH (a synchronous login-shell spawn) at most every 30s,
+    // not on every 4s poll
+    if (fresh && Date.now() - lastPathRefresh > 30000) { lastPathRefresh = Date.now(); loginPath(true); }
     const cfg = readCfg();
     const repo = gitInfo(cfg.repoPath);
     // Connections-panel extras: everything below is fs reads, in-memory state,
@@ -1048,12 +1128,19 @@ const server = createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/config') {
     const patch = await readBody(req);
     if (typeof patch.repoPath === 'string') patch.repoPath = patch.repoPath.trim();
+    // A real repoPath must be an existing directory — it widens every downstream
+    // file/exec surface, so refuse a bogus or traversal path up front.
+    if (typeof patch.repoPath === 'string' && patch.repoPath && !patch.repoPath.startsWith('/ABSOLUTE')) {
+      let okDir = false;
+      try { okDir = lstatSync(patch.repoPath).isDirectory(); } catch { okDir = false; }
+      if (!okDir) return json(res, 400, { error: `repoPath is not an existing directory: ${patch.repoPath}` });
+    }
     delete patch.recentRepos;  // server-owned — only real repo switches write it
     delete patch.repoSettings; // server-owned — per-repo memory below
     const prev = readCfg();
     const switching = typeof patch.repoPath === 'string' && patch.repoPath
       && !patch.repoPath.startsWith('/ABSOLUTE') && patch.repoPath !== prev.repoPath;
-    if (switching && (activeRuns > 0 || Commands.running() || Chat.busyWriting())) {
+    if (switching && writerBusy()) {
       return json(res, 409, { error: 'an agent is working in the current repo — switch repos after it finishes' });
     }
     const next = mergeCfg(prev, patch);
@@ -1152,7 +1239,7 @@ const server = createServer(async (req, res) => {
       try {
         const file = join(cfg.repoPath, cfg.sources?.backlog || 'BACKLOG.md');
         const lines = readFileSync(file, 'utf8').split('\n');
-        const matches = (l) => { const m = (l || '').match(/^\s*[-*]\s+\[ \]\s+(.*)$/); return !!m && m[1].trim() === task.title; };
+        const matches = (l) => { const m = (l || '').match(BACKLOG_UNCHECKED_RE); return !!m && m[1].trim() === task.title; };
         const i = (task.line && matches(lines[task.line - 1])) ? task.line - 1 : lines.findIndex(matches);
         if (i >= 0) {
           lines.splice(i, 1);
@@ -1171,10 +1258,7 @@ const server = createServer(async (req, res) => {
     }
     // surgical board update — no expensive verifier re-scan for a dismiss
     state.tasks = state.tasks.filter((t) => t.id !== id);
-    state.meta.counts = {
-      needsWork: state.tasks.filter((t) => t.column === 'needs-work').length,
-      shouldImplement: state.tasks.filter((t) => t.column === 'should-implement').length,
-    };
+    state.meta.counts = recomputeCounts(state.tasks);
     state.meta.generatedAt = new Date().toISOString(); // bump so the client's render dedup re-renders
     writeJsonAtomic(tasksPath, state);
     publish('task.discard', `discarded — ${task.title}`, { id });
@@ -1248,9 +1332,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST') {
-      if (activeRuns > 0) return json(res, 409, { error: 'an agent run is active — wait for it to finish' });
-      if (Commands.running()) return json(res, 409, { error: 'a saved command is running — wait for it to finish' });
-      if (Chat.busyWriting()) return json(res, 409, { error: 'a write-capable chat turn is active — wait for it to finish' });
+      const busy = writerBlockReason(); // every git write op excludes the single writer
+      if (busy) return json(res, 409, { error: `${busy} — wait for it to finish` });
       const body = await readBody(req);
       const st = gitState(repoPath);
 
@@ -1277,7 +1360,7 @@ const server = createServer(async (req, res) => {
 
       if (url.pathname === '/api/git/commit') {
         if (!st.dirty) return json(res, 400, { error: 'nothing to commit — tree is clean' });
-        const message = String(body.message || '').trim() || generateCommitMessage(repoPath);
+        const message = String(body.message || '').trim() || await generateCommitMessage(repoPath);
         const msgFile = join(__dirname, '.workloop', 'commitmsg.txt');
         writeFileSync(msgFile, message + '\n');
         gitIn(repoPath, ['add', '-A']);
@@ -1385,23 +1468,25 @@ const server = createServer(async (req, res) => {
     const id = url.searchParams.get('id') || '';
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.write('retry: 10000\n\n');
-    const foreign = foreignRunLock(); // the OTHER instance shares this checkout — one writer across processes
-    if (activeRuns > 0 || Commands.running() || Chat.busyWriting() || foreign) { // one writer at a time — they'd fight over the tree
+    // One writer at a time. In-process exclusion first (specific message), then
+    // the ATOMIC cross-instance lock — acquired BEFORE spawning so two instances
+    // sharing this checkout can't both win the race.
+    const blockEnd = (reason) => {
       publish('run.blocked', 'run blocked — another writer is active', { taskId: id });
-      const reason = activeRuns > 0 ? 'another run is already active — wait for it to finish, then Retry'
-        : Commands.running() ? 'a saved command is running — wait for it to finish, then Retry'
-          : Chat.busyWriting() ? 'a write-capable chat turn is active — wait for it to finish, then Retry'
-            : `a run is active in the other Workloop instance (:${foreign.port}) — wait for it, then Retry`;
       res.write(`data: ${JSON.stringify({ type: 'done', ok: false, reason })}\n\n`);
       res.write('event: end\ndata: {}\n\n');
       return res.end();
-    }
+    };
+    const local = writerBlockReason();
+    if (local) return blockEnd(`${local} — wait for it to finish, then Retry`);
+    const lock = acquireRunLock(id, process.pid); // placeholder pid; the real child pid is written below
+    if (lock !== true) return blockEnd(`a run is active in the other Workloop instance (:${lock.port}) — wait for it, then Retry`);
     const task = (readTasks().tasks || []).find((t) => t.id === id);
     const child = spawn(process.execPath, [join(__dirname, 'runner.mjs'), id], { cwd: __dirname });
     activeRuns++;
     runnerChild = child;
     currentRun = { taskId: id, title: task?.title || id, file: task?.file || null };
-    writeRunLock(id, child.pid);
+    writeRunLock(id, child.pid); // replace the placeholder pid with the real runner pid (atomic)
     publish('run.start', `run started — ${currentRun.title}`, currentRun);
     let doneSeen = false;
     const mirror = (line) => { // additive bus tap — the per-run SSE stream is untouched
@@ -1414,8 +1499,8 @@ const server = createServer(async (req, res) => {
         doneSeen = true;
         publish('run.done',
           o.ok ? `run complete — ${currentRun.title}` : `run needs you — ${o.reason || 'stopped'}`,
-          { taskId: id, ok: !!o.ok, reason: o.reason, branch: o.branch, pr: o.pr, note: o.note });
-        setLastRun({ taskId: id, title: currentRun?.title || id, ok: !!o.ok, reason: o.reason || null, branch: o.branch || null, pr: o.pr || null, note: o.note || null });
+          { taskId: id, ok: !!o.ok, verified: !!o.verified, reason: o.reason, branch: o.branch, pr: o.pr, note: o.note });
+        setLastRun({ taskId: id, title: currentRun?.title || id, ok: !!o.ok, verified: !!o.verified, reason: o.reason || null, branch: o.branch || null, pr: o.pr || null, note: o.note || null });
         // a finding fixed by the run leaves the store — the post-run scan drops its card
         if (o.ok && task?.findingId) Findings.resolve(task.findingId);
         if (!o.ok) Handoffs.fromRunFailure(id, currentRun?.title || id, o.reason, o.branch, o.log, readCfg().repoPath);
@@ -1444,13 +1529,18 @@ const server = createServer(async (req, res) => {
       res.write('event: end\ndata: {}\n\n');
       res.end();
     });
-    req.on('close', () => { try { child.kill(); } catch { /* gone */ } });
+    req.on('close', () => {
+      // SIGTERM lets runner.mjs run its cleanup (kills the agent tree, releases
+      // the lock) and exit; escalate to SIGKILL if it's still alive after a grace.
+      try { child.kill('SIGTERM'); } catch { /* gone */ }
+      setTimeout(() => { if (runnerChild === child && child.exitCode === null) { try { Platform.killTree(child, 'SIGKILL'); } catch { /* gone */ } } }, 4000).unref?.();
+    });
     return;
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not found');
-});
+}
 
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
@@ -1460,7 +1550,7 @@ server.on('error', (e) => {
   throw e;
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   const cfg = readCfg();
   console.log(`\n  WORKLOOP  ->  http://localhost:${PORT}`);
   publish('server.start', 'workloop online', { bootId, port: PORT });

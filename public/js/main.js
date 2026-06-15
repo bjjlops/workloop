@@ -20,8 +20,8 @@
 
   // bus-driven refreshes. The ring now PERSISTS across restarts and replays
   // on every reconnect — every fetch-triggering handler must ignore stale
-  // replayed events or a reconnect becomes a fetch storm.
-  const live = (ev) => !ev?.ts || Date.now() - ev.ts < 15000;
+  // replayed events (Bus.live) or a reconnect becomes a fetch storm.
+  const live = Bus.live;
   Bus.on('scan.done', async (ev) => {
     if (!live(ev)) return;
     if (state.batch || state.running) return; // board re-renders after the batch settles
