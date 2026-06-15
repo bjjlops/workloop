@@ -36,6 +36,10 @@ const DEFAULT_CFG = {
   // note: the structured engine fields (bin/model/effort/flags) are deliberately
   // NOT defaulted — their absence tells the UI to migrate a legacy one-string command
   agent: { command: 'claude', maxTurns: 30, allowedTools: 'Read,Edit,Bash', permissionMode: 'acceptEdits', stream: true },
+  // loop-engineering run mode (orchestrator→worktree→plan→write→check→feedback).
+  // Opt-in: it triples agent calls per task and links node_modules into a
+  // worktree, so it's off by default — flip enabled:true to route runs through it.
+  loop: { enabled: false, worktrees: true, linkDirs: ['node_modules'], maxRetries: 2, autoApprovePlan: true, teardownOnFail: false, parallel: 1 },
   chat: { allowedTools: 'Read,Glob,Grep', maxTurns: 15, timeoutMs: 180000 },
   commands: [],
   ui: { theme: 'mission-control', ambientFx: true },
@@ -875,6 +879,85 @@ const clearRunLock = () => {
   } catch { /* gone */ }
 };
 
+// streamRun: the shared SSE run lifecycle for BOTH the per-task run (/api/run)
+// and the orchestrated batch (/api/loop). Same single-writer guard, same NDJSON
+// pass-through + bus mirror, same lock/scan lifecycle — only the child entry
+// point and the terminal-event handling differ (a batch forwards per-task
+// {type:'task-done'} lines; only the orchestrator's final {type:'done'} ends it).
+function streamRun(req, res, { id, title, file = null, entry, args = [], task = null }) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+  res.write('retry: 10000\n\n');
+  const foreign = foreignRunLock(); // the OTHER instance shares this checkout — one writer across processes
+  if (activeRuns > 0 || Commands.running() || Chat.busyWriting() || foreign) { // one writer at a time — they'd fight over the tree
+    publish('run.blocked', 'run blocked — another writer is active', { taskId: id });
+    const reason = activeRuns > 0 ? 'another run is already active — wait for it to finish, then Retry'
+      : Commands.running() ? 'a saved command is running — wait for it to finish, then Retry'
+        : Chat.busyWriting() ? 'a write-capable chat turn is active — wait for it to finish, then Retry'
+          : `a run is active in the other Workloop instance (:${foreign.port}) — wait for it, then Retry`;
+    res.write(`data: ${JSON.stringify({ type: 'done', ok: false, reason })}\n\n`);
+    res.write('event: end\ndata: {}\n\n');
+    return res.end();
+  }
+  const child = spawn(process.execPath, [entry, ...args], { cwd: __dirname });
+  activeRuns++;
+  runnerChild = child;
+  currentRun = { taskId: id, title, file };
+  writeRunLock(id, child.pid);
+  publish('run.start', `run started — ${title}`, currentRun);
+  let doneSeen = false;
+  const mirror = (line) => { // additive bus tap — the per-run SSE stream is untouched
+    let o;
+    try { o = JSON.parse(line); } catch { return; }
+    if (o.type === 'status') publish('run.status', o.message || '', { taskId: id });
+    else if (o.type === 'agent') publishLine('run.agent', o.message || '', { taskId: id });
+    else if (o.type === 'file' && o.path) publish('run.file', `${o.op} ${o.path}`, { taskId: id, op: o.op, path: o.path });
+    // ---- loop-pipeline phases (additive; the classic runner never emits these) ----
+    else if (o.type === 'phase') { publish('run.phase', `phase: ${o.phase}`, { taskId: id, phase: o.phase }); writeRunLock(id, child.pid); } // heartbeat: a long loop run must keep refreshing the lock so the other instance's 30-min reaper doesn't steal it
+    else if (o.type === 'plan') publish('run.plan', 'plan ready', { taskId: id, path: o.path, summary: o.summary });
+    else if (o.type === 'check') publish('run.check', o.ok ? 'checker passed' : 'checker found issues', { taskId: id, ok: o.ok, mode: o.mode, notes: o.notes });
+    else if (o.type === 'retry') publish('run.retry', `retrying after checker feedback (#${o.n})`, { taskId: id, n: o.n });
+    else if (o.type === 'manifest') publish('run.manifest', `run manifest — ${o.count} task(s)`, { count: o.count, deferred: o.deferred, path: o.path });
+    else if (o.type === 'task-done') { // a worker finished inside an orchestrated batch — NOT the batch terminal
+      publish('run.status', o.ok ? `task done — ${o.title || o.id}` : `task failed — ${o.reason || o.title || o.id}`, { taskId: o.id, ok: o.ok });
+      if (o.ok && o.findingId) Findings.resolve(o.findingId);
+    }
+    else if (o.type === 'done' && !doneSeen) {
+      doneSeen = true;
+      publish('run.done',
+        o.ok ? `run complete — ${title}` : `run needs you — ${o.reason || 'stopped'}`,
+        { taskId: id, ok: !!o.ok, reason: o.reason, branch: o.branch, pr: o.pr, note: o.note, retries: o.retries, checkerNotes: o.notes });
+      setLastRun({ taskId: id, title, ok: !!o.ok, reason: o.reason || null, branch: o.branch || null, pr: o.pr || null, note: o.note || null });
+      // a finding fixed by the run leaves the store — the post-run scan drops its card
+      if (o.ok && task?.findingId) Findings.resolve(task.findingId);
+      if (!o.ok) Handoffs.fromRunFailure(id, title, o.reason, o.branch, o.log, readCfg().repoPath);
+    }
+  };
+  let buf = '';
+  child.stdout.on('data', (d) => {
+    buf += d.toString();
+    let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (line.trim()) { res.write(`data: ${line}\n\n`); mirror(line); } }
+  });
+  child.stderr.on('data', (d) => {
+    res.write(`data: ${JSON.stringify({ type: 'agent', message: String(d).trim() })}\n\n`);
+    publishLine('run.agent', String(d).trim(), { taskId: id });
+  });
+  child.on('close', () => {
+    activeRuns = Math.max(0, activeRuns - 1);
+    if (runnerChild === child) runnerChild = null;
+    if (!doneSeen) { // killed or crashed before its done line
+      doneSeen = true;
+      publish('run.done', `run ended — ${currentRun?.title || id}`, { taskId: id, ok: false, reason: 'runner exited unexpectedly' });
+      setLastRun({ taskId: id, title: currentRun?.title || id, ok: false, reason: 'runner exited unexpectedly', branch: null, pr: null, note: null });
+    }
+    currentRun = null;
+    clearRunLock();
+    scheduleScanAfterRun(); // every tab re-syncs via scan.done — not just the one that clicked Run
+    res.write('event: end\ndata: {}\n\n');
+    res.end();
+  });
+  req.on('close', () => { try { child.kill(); } catch { /* gone */ } });
+}
+
 // ---------- http ----------
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -1383,68 +1466,25 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/run') {
     const id = url.searchParams.get('id') || '';
-    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-    res.write('retry: 10000\n\n');
-    const foreign = foreignRunLock(); // the OTHER instance shares this checkout — one writer across processes
-    if (activeRuns > 0 || Commands.running() || Chat.busyWriting() || foreign) { // one writer at a time — they'd fight over the tree
-      publish('run.blocked', 'run blocked — another writer is active', { taskId: id });
-      const reason = activeRuns > 0 ? 'another run is already active — wait for it to finish, then Retry'
-        : Commands.running() ? 'a saved command is running — wait for it to finish, then Retry'
-          : Chat.busyWriting() ? 'a write-capable chat turn is active — wait for it to finish, then Retry'
-            : `a run is active in the other Workloop instance (:${foreign.port}) — wait for it, then Retry`;
-      res.write(`data: ${JSON.stringify({ type: 'done', ok: false, reason })}\n\n`);
-      res.write('event: end\ndata: {}\n\n');
-      return res.end();
-    }
     const task = (readTasks().tasks || []).find((t) => t.id === id);
-    const child = spawn(process.execPath, [join(__dirname, 'runner.mjs'), id], { cwd: __dirname });
-    activeRuns++;
-    runnerChild = child;
-    currentRun = { taskId: id, title: task?.title || id, file: task?.file || null };
-    writeRunLock(id, child.pid);
-    publish('run.start', `run started — ${currentRun.title}`, currentRun);
-    let doneSeen = false;
-    const mirror = (line) => { // additive bus tap — the per-run SSE stream is untouched
-      let o;
-      try { o = JSON.parse(line); } catch { return; }
-      if (o.type === 'status') publish('run.status', o.message || '', { taskId: id });
-      else if (o.type === 'agent') publishLine('run.agent', o.message || '', { taskId: id });
-      else if (o.type === 'file' && o.path) publish('run.file', `${o.op} ${o.path}`, { taskId: id, op: o.op, path: o.path });
-      else if (o.type === 'done' && !doneSeen) {
-        doneSeen = true;
-        publish('run.done',
-          o.ok ? `run complete — ${currentRun.title}` : `run needs you — ${o.reason || 'stopped'}`,
-          { taskId: id, ok: !!o.ok, reason: o.reason, branch: o.branch, pr: o.pr, note: o.note });
-        setLastRun({ taskId: id, title: currentRun?.title || id, ok: !!o.ok, reason: o.reason || null, branch: o.branch || null, pr: o.pr || null, note: o.note || null });
-        // a finding fixed by the run leaves the store — the post-run scan drops its card
-        if (o.ok && task?.findingId) Findings.resolve(task.findingId);
-        if (!o.ok) Handoffs.fromRunFailure(id, currentRun?.title || id, o.reason, o.branch, o.log, readCfg().repoPath);
-      }
-    };
-    let buf = '';
-    child.stdout.on('data', (d) => {
-      buf += d.toString();
-      let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (line.trim()) { res.write(`data: ${line}\n\n`); mirror(line); } }
-    });
-    child.stderr.on('data', (d) => {
-      res.write(`data: ${JSON.stringify({ type: 'agent', message: String(d).trim() })}\n\n`);
-      publishLine('run.agent', String(d).trim(), { taskId: id });
-    });
-    child.on('close', () => {
-      activeRuns = Math.max(0, activeRuns - 1);
-      if (runnerChild === child) runnerChild = null;
-      if (!doneSeen) { // killed or crashed before its done line
-        doneSeen = true;
-        publish('run.done', `run ended — ${currentRun?.title || id}`, { taskId: id, ok: false, reason: 'runner exited unexpectedly' });
-        setLastRun({ taskId: id, title: currentRun?.title || id, ok: false, reason: 'runner exited unexpectedly', branch: null, pr: null, note: null });
-      }
-      currentRun = null;
-      clearRunLock();
-      scheduleScanAfterRun(); // every tab re-syncs via scan.done — not just the one that clicked Run
-      res.write('event: end\ndata: {}\n\n');
-      res.end();
-    });
-    req.on('close', () => { try { child.kill(); } catch { /* gone */ } });
+    // Loop mode (opt-in) routes the run through the full loop-engineering pipeline
+    // (worktree→plan→write→check→feedback); otherwise the classic single-agent
+    // runner. Both speak the same NDJSON contract, so streamRun is shared.
+    const runEntry = readCfg().loop?.enabled ? join(__dirname, 'loop', 'pipeline.mjs') : join(__dirname, 'runner.mjs');
+    streamRun(req, res, { id, title: task?.title || id, file: task?.file || null, entry: runEntry, args: [id], task });
+    return;
+  }
+
+  // Orchestrated batch (Layer 1): the orchestrator reads the whole board, writes a
+  // manifest, then drives a worker per task. An explicit loop trigger — available
+  // regardless of cfg.loop.enabled (the orchestrator forces loop mode on its
+  // children). Reuses the exact single-writer guard + lifecycle via streamRun.
+  if (req.method === 'GET' && url.pathname === '/api/loop') {
+    const ids = url.searchParams.get('ids');
+    const args = [];
+    if (ids) args.push('--ids', ids);
+    if (url.searchParams.get('dryRun') === '1') args.push('--dry-run');
+    streamRun(req, res, { id: 'loop', title: ids ? `loop — ${ids.split(',').length} task(s)` : 'loop — full board', entry: join(__dirname, 'loop', 'orchestrator.mjs'), args });
     return;
   }
 
