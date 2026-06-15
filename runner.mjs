@@ -3,13 +3,17 @@
 // Emits newline-delimited JSON status to stdout for the server to stream as SSE.
 // Safety: only ever creates a branch + local commit (+ optional PR). Never merges,
 // deploys, or runs migrations.
+//
+// This is the CLASSIC single-agent run path. The loop-engineering pipeline
+// (loop/pipeline.mjs) is the upgraded path; both now share the headless-agent
+// core in loop/agent.mjs so the careful stream parsing, file-event mapping, auth
+// sniffing and kill-forwarding live in exactly one place.
 
-import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
-import { spawn, spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { childEnv, resolveClaude, splitCommand } from './env.mjs';
-import { userShell, spawnTool } from './platform.mjs';
+import { runAgent, runArgs, runShell, killAllAgents, tail } from './loop/agent.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cfg = JSON.parse(readFileSync(join(__dirname, 'workloop.config.json'), 'utf8'));
@@ -20,77 +24,15 @@ const ENV = childEnv();
 const emit = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 // When the server kills this runner (tab closed / shutdown), forward the signal
 // to the headless agent so it doesn't keep editing the tree as an orphan.
-let agentChild = null;
-const killAgent = () => { if (agentChild) { try { agentChild.kill('SIGKILL'); } catch { /* gone */ } } };
-process.on('SIGTERM', () => { killAgent(); process.exit(143); });
-process.on('SIGINT', () => { killAgent(); process.exit(130); });
-let sawAuthError = false;
-const checkAuth = (s) => { if (/not logged in|please run \/login/i.test(s)) sawAuthError = true; };
-const sh = (cmd) => { // user-authored verify commands ONLY — internal git/gh go through shArgs
-  const s = userShell(cmd);
-  const r = spawnSync(s.bin, s.args, { ...s.opts, cwd: repo, encoding: 'utf8', maxBuffer: 1024 * 1024 * 30, env: ENV });
-  return { code: r.status ?? 1, out: r.stdout || '', err: r.stderr || '' };
-};
+process.on('SIGTERM', () => { killAllAgents(); process.exit(143); });
+process.on('SIGINT', () => { killAllAgents(); process.exit(130); });
+
 // shArgs: argv form, no shell — use whenever an argument carries user text
 // (task titles, branch names) so shell metacharacters can't be interpreted.
-const shArgs = (file, args) => {
-  const r = spawnSync(file, args, { cwd: repo, encoding: 'utf8', maxBuffer: 1024 * 1024 * 30, env: ENV });
-  return { code: r.status ?? 1, out: r.stdout || '', err: r.stderr || '' };
-};
+const shArgs = (file, args) => runArgs(file, args, { cwd: repo, env: ENV });
+// sh: user-authored verify commands ONLY — internal git/gh go through shArgs.
+const sh = (cmd) => runShell(cmd, { cwd: repo, env: ENV });
 const slug = (s) => ((s || 'task').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'task');
-const tail = (s, n = 20) => s.split('\n').filter((l) => l.trim()).slice(-n).join('\n');
-
-// tool name -> galaxy stream meaning. Bash is deliberately absent: a shell
-// command may touch many files or none — git polling attributes those instead.
-const FILE_OPS = { Read: 'read', Edit: 'edit', Write: 'edit', MultiEdit: 'edit', NotebookEdit: 'edit' };
-// the agent reports CANONICAL absolute paths (macOS: /tmp -> /private/tmp) —
-// match against the configured root AND its realpath, or events vanish silently
-const repoReal = (() => { try { return realpathSync(repo); } catch { return repo; } })();
-function relToRepo(p) {
-  for (const root of [repo, repoReal]) {
-    if (p.startsWith(root + '/')) return p.slice(root.length + 1);
-  }
-  return null;
-}
-function fileEvent(b) {
-  const op = FILE_OPS[b.name];
-  if (!op) return;
-  let p = b.input?.file_path || b.input?.path;
-  if (!p || typeof p !== 'string') return;
-  if (p.startsWith('/')) {
-    p = relToRepo(p);
-    if (!p) return; // outside the repo — nothing to light up
-  }
-  emit({ type: 'file', op, path: p });
-}
-
-function handleLine(line) {
-  if (!line.trim()) return;
-  let o;
-  try { o = JSON.parse(line); }
-  catch {
-    // Non-JSON stdout is the CLI itself talking — the only stdout where a
-    // real "not logged in" can appear. JSON lines carry the agent's file
-    // reads/edits, and files in THIS repo legitimately contain "/login"
-    // (chat.mjs, handoffs.mjs regexes) — sniffing them aborted healthy runs
-    // with a false "engine is not logged in".
-    checkAuth(line);
-    emit({ type: 'agent', message: line.slice(0, 300) });
-    return;
-  }
-  if (o.type === 'assistant' && o.message?.content) {
-    for (const b of o.message.content) {
-      if (b.type === 'text' && b.text?.trim()) emit({ type: 'agent', message: b.text.trim().slice(0, 400) });
-      else if (b.type === 'tool_use') {
-        emit({ type: 'agent', message: `> ${b.name}${b.input?.command ? ': ' + String(b.input.command).slice(0, 90) : ''}` });
-        fileEvent(b);
-      }
-    }
-  } else if (o.type === 'result' && o.subtype && o.subtype !== 'success') {
-    checkAuth(`${o.subtype} ${o.result || ''}`); // a FAILED result's own text is the CLI's error, not file content
-    emit({ type: 'agent', message: `result: ${o.subtype}` });
-  }
-}
 
 (async () => {
   try {
@@ -149,39 +91,22 @@ ${loopRule}${todoRule}
 - When finished, give a one-paragraph summary of what you changed.`;
 
     emit({ type: 'status', message: 'Starting agent...' });
-    const args = ['-p', prompt, '--allowedTools', cfg.agent.allowedTools,
-      '--permission-mode', cfg.agent.permissionMode, '--max-turns', String(cfg.agent.maxTurns)];
-    if (cfg.agent.stream) args.push('--output-format', 'stream-json', '--verbose');
-    args.push(...extraArgs);
-
-    const code = await new Promise((resolve) => {
-      let child;
-      try { child = spawnTool(claudeBin, args, { cwd: repo, env: ENV, stdio: ['ignore', 'pipe', 'pipe'] }); }
-      catch (e) { emit({ type: 'done', ok: false, reason: `could not start engine: ${e.message}` }); return resolve(-1); }
-      agentChild = child;
-      child.on('error', (e) => {
-        agentChild = null;
-        emit({ type: 'done', ok: false, reason: `engine failed to launch (${e.code || e.message}) — try Recheck in the dashboard` });
-        resolve(-1);
-      });
-      let buf = '';
-      child.stdout.on('data', (d) => {
-        buf += d.toString();
-        let i; while ((i = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); handleLine(line); }
-      });
-      child.stderr.on('data', (d) => { const m = d.toString().trim(); checkAuth(m); if (m) emit({ type: 'agent', message: m.slice(0, 300) }); });
-      child.on('close', (c) => { agentChild = null; resolve(c); });
+    const r = await runAgent({
+      claudeBin, extraArgs, prompt,
+      allowedTools: cfg.agent.allowedTools, permissionMode: cfg.agent.permissionMode,
+      maxTurns: cfg.agent.maxTurns, stream: cfg.agent.stream !== false,
+      cwd: repo, root: repo, env: ENV, emit,
     });
-    if (code === -1) return; // done already emitted
+    if (r.error) return emit({ type: 'done', ok: false, reason: r.error });
 
-    if (sawAuthError)
+    if (r.sawAuthError)
       return emit({
         type: 'done', ok: false,
         reason: 'engine is not logged in — open Terminal, run `claude`, type /login, sign in, then Retry here',
         branch,
       });
 
-    emit({ type: 'status', message: `Agent finished (exit ${code}).` });
+    emit({ type: 'status', message: `Agent finished (exit ${r.code}).` });
 
     if (task.verifiable) {
       emit({ type: 'status', message: `Verifying: ${task.verifyCmd}` });
