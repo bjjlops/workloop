@@ -64,8 +64,16 @@ async function loadSettings() {
   if ($('#f-editor')) $('#f-editor').value = c.editor?.command || '';
   $('#f-pr').checked = !!c.openPR;
   if ($('#f-pushcommit')) $('#f-pushcommit').checked = !!c.git?.pushOnCommit;
+  const lp = c.loop || {};
+  if ($('#f-loop-enabled')) $('#f-loop-enabled').checked = !!lp.enabled;
+  if ($('#f-loop-worktrees')) $('#f-loop-worktrees').checked = lp.worktrees !== false;
+  if ($('#f-loop-autoplan')) $('#f-loop-autoplan').checked = lp.autoApprovePlan !== false;
+  if ($('#f-loop-teardownfail')) $('#f-loop-teardownfail').checked = !!lp.teardownOnFail;
+  if ($('#f-loop-retries')) $('#f-loop-retries').value = Number.isFinite(lp.maxRetries) ? lp.maxRetries : 2;
+  if ($('#f-loop-linkdirs')) $('#f-loop-linkdirs').value = (lp.linkDirs || ['node_modules']).join(', ');
   $('#detectmsg').textContent = '';
   state.config = c;
+  if (typeof reflectLoopMode === 'function') reflectLoopMode(); // toggle the Loop board button when loop mode flips
   if (typeof Commands !== 'undefined' && Commands.renderList) Commands.renderList(c.commands || []);
   if (typeof Themes !== 'undefined' && Themes.syncFromConfig) Themes.syncFromConfig(c);
   loadRepoList(state.repoFindOn);
@@ -107,6 +115,14 @@ async function saveSettings() {
     dev: { command: $('#f-dev').value.trim(), url: $('#f-devurl').value.trim() },
     agent: { ...engineFields(), command: composeEngine(engineFields()), maxTurns: Number($('#f-turns').value) || 30 },
     editor: { command: $('#f-editor') ? $('#f-editor').value.trim() : '' },
+    loop: {
+      enabled: $('#f-loop-enabled').checked,
+      worktrees: $('#f-loop-worktrees').checked,
+      autoApprovePlan: $('#f-loop-autoplan').checked,
+      teardownOnFail: $('#f-loop-teardownfail').checked,
+      maxRetries: Number($('#f-loop-retries').value) || 0,
+      linkDirs: $('#f-loop-linkdirs').value.split(',').map((s) => s.trim()).filter(Boolean),
+    },
   };
   const b = $('#save'); b.disabled = true; b.textContent = 'Saving…';
   try {

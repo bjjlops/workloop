@@ -98,6 +98,7 @@ document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2'
         <button class="dsec-fold" data-sec="tasks" aria-expanded="true">▾</button>
         <h3>Tasks <span class="n" id="n-needs"></span></h3>
         <button class="runall" id="runall" hidden>Run all</button>
+        <button class="runall loop" id="loopboard" hidden title="Loop engineering: plan → write → adversarial check every task in isolated worktrees">⟳ Loop board</button>
       </header>
       <div class="dbody" id="body-tasks">
         <div class="subh">Needs work</div>
@@ -263,6 +264,19 @@ document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2'
         <div class="field"><label for="f-test">Test</label><input type="text" id="f-test" /></div>
         <div class="field"><label for="f-lint">Lint</label><input type="text" id="f-lint" /></div>
         <div class="field"><label for="f-build">Build</label><input type="text" id="f-build" /></div>
+      </div>
+    </details>
+
+    <details class="dlsec" id="sec-loop">
+      <summary>Loop engineering</summary>
+      <div class="dlbody">
+        <label class="check"><input type="checkbox" id="f-loop-enabled" /> enable loop mode (plan → write → checker review per task)</label>
+        <span class="hint">Off by default. When on, every <strong>Run</strong> and the <strong>Loop board</strong> button route through an isolated git worktree: a plan is written first, then a <em>separate adversarial checker</em> reviews the diff and retries on failure. It never merges — you get a reviewed branch. Roughly triples agent calls per task.</span>
+        <label class="check"><input type="checkbox" id="f-loop-worktrees" /> isolate each task in its own git worktree</label>
+        <label class="check"><input type="checkbox" id="f-loop-autoplan" /> auto-approve the plan (headless)</label>
+        <label class="check"><input type="checkbox" id="f-loop-teardownfail" /> remove the worktree even when a run fails</label>
+        <div class="field"><label for="f-loop-retries">Max checker retries</label><input type="number" id="f-loop-retries" min="0" max="5" /></div>
+        <div class="field"><label for="f-loop-linkdirs">Link into worktree <span class="hint">(comma-separated)</span></label><input type="text" id="f-loop-linkdirs" placeholder="node_modules" /></div>
       </div>
     </details>
 

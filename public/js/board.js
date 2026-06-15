@@ -34,6 +34,19 @@ function updateRunUI() {
   });
   const ra = $('#runall');
   if (ra && !state.batch) ra.disabled = !!state.running;
+  const lb = $('#loopboard');
+  if (lb && !state.batch) lb.disabled = !!state.running;
+}
+
+// Loop mode swaps "Run all" for "Loop board" — the orchestrator that plans, writes
+// and adversarially checks every task in its own worktree. Toggled in Settings.
+function reflectLoopMode() {
+  const lb = $('#loopboard');
+  if (!lb) return;
+  const loopOn = !!state.config?.loop?.enabled;
+  const hasNeeds = (state.tasks || []).some((t) => t.column === 'needs-work');
+  lb.hidden = !(loopOn && hasNeeds);
+  if (!state.batch) { lb.disabled = !!state.running; lb.textContent = '⟳ Loop board'; }
 }
 
 function render(data) {
@@ -59,9 +72,11 @@ function render(data) {
     'No goals queued — type one above and hit <code>Queue it</code>.');
 
   const verified = cols['needs-work'].filter((t) => t.verifiable);
+  const loopOn = !!state.config?.loop?.enabled;
   const ra = $('#runall');
-  ra.hidden = verified.length < 2;
+  ra.hidden = loopOn || verified.length < 2; // in loop mode the Loop board button takes over
   if (!state.batch) { ra.disabled = !!state.running; ra.textContent = 'Run all'; }
+  reflectLoopMode();
 
   const byFile = new Map(); // light up task targets on the galaxy
   for (const t of state.tasks) {
@@ -228,6 +243,46 @@ $('#runall').addEventListener('click', async () => {
   ra.textContent = 'Run all';
   // the server's post-run scan covers the batch too — scan.done re-renders
 });
+
+/* ---------- loop the board (orchestrator: plan → write → check per task) ---------- */
+function markLooped(id, o) {
+  const el = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
+  if (!el) return;
+  el.classList.remove('running');
+  el.classList.add('has-log', o.ok ? 'ok' : 'warn');
+  const v = el.querySelector('.result .v');
+  if (v) v.textContent = o.ok ? 'looped ✓ — reviewed branch ready' : ('needs you — ' + (o.reason || 'checker failed'));
+  const btn = el.querySelector('.run');
+  if (btn) btn.innerHTML = o.ok ? '<span class="tri">✓</span> Done' : '<span class="tri">▶</span> Retry';
+}
+
+function loopBoard() {
+  if (state.batch || state.running) { note('one run at a time — wait for the active run to finish'); return; }
+  const lb = $('#loopboard');
+  state.batch = true;
+  lb.disabled = true; lb.textContent = '⟳ Looping…';
+  let planned = 0, done = 0;
+  const reset = () => { state.batch = false; lb.disabled = false; lb.textContent = '⟳ Loop board'; };
+  // the orchestrator narrates plan/write/check phases on the activity log (the bus);
+  // here we track overall progress and mark each card as its worker finishes.
+  const es = new EventSource('/api/loop');
+  es.onmessage = (e) => {
+    let o; try { o = JSON.parse(e.data); } catch { return; }
+    if (o.type === 'manifest') {
+      planned = o.count || 0;
+      note(`loop: ${planned} task(s) planned${(o.deferred || []).length ? ' · ' + o.deferred.length + ' deferred (repeated failures)' : ''}`);
+    } else if (o.type === 'task-done') {
+      done++; markLooped(o.id, o);
+      lb.textContent = `⟳ Looping ${done}${planned ? '/' + planned : ''}…`;
+    } else if (o.type === 'done') {
+      const s = o.summary;
+      note(s ? `loop done — ${s.passed}/${s.total} passed${s.deferred ? ' · ' + s.deferred + ' deferred' : ''}` : (o.reason || 'loop finished'));
+    }
+  };
+  es.addEventListener('end', () => { es.close(); reset(); refreshRepo(); });
+  es.onerror = () => { es.close(); reset(); note('loop stream closed'); };
+}
+$('#loopboard')?.addEventListener('click', loopBoard);
 
 /* ---------- add a goal (promptless tasking) ---------- */
 async function queueGoal() {

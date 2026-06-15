@@ -35,6 +35,9 @@
 }
 .dsech .runall:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); color: var(--accent-bright); box-shadow: 0 0 10px -4px var(--glow-accent) }
 .dsech .runall[disabled] { opacity: .5; cursor: default }
+/* loop-mode batch button — a touch brighter than Run all so it reads as the upgraded path */
+.dsech .runall.loop { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); color: var(--accent-bright) }
+.dsech .runall.loop:hover { border-color: var(--accent); box-shadow: 0 0 12px -3px var(--glow-accent) }
 .dsech .linkbtn { margin-left: auto }
 .dsech .runall + .linkbtn, .dsech .logchips { margin-left: auto }
 
