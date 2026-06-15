@@ -3,7 +3,7 @@
 // supported; Linux is best-effort (documented in the README).
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, writeFileSync, chmodSync, symlinkSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 
 export const isWin = process.platform === 'win32';
@@ -50,6 +50,29 @@ export function spawnToolSync(file, args, opts = {}) {
   try { r = resolveToolForExec(file); }
   catch (e) { return { status: -1, stdout: '', stderr: String(e.message), error: e }; }
   return spawnSync(r.file, [...r.prefixArgs, ...args], opts);
+}
+
+/* ---------- directory links (worktree dependency sharing) ----------
+   The loop engine runs agents in a throwaway git worktree, which contains only
+   TRACKED files — a repo's gitignored node_modules (where tsc/eslint/jest live)
+   is absent, so every verifier would fail on a missing binary. We link the real
+   node_modules (and any other configured cache dir) into the worktree; tools
+   only READ it, so a shared link is safe for concurrent runs.
+
+   POSIX: a directory symlink. Windows: a JUNCTION (mklink /J) — unlike a symlink
+   it needs no admin/Developer-Mode privilege and reads like a real directory.
+   Returns { ok:true } | { ok:true, existed:true } | { error }. Callers treat an
+   error as "fall back to verifying in the main checkout" (never a hard failure). */
+export function linkDir(target, link) {
+  if (!existsSync(target)) return { error: `link target missing: ${target}` };
+  if (existsSync(link)) return { ok: true, existed: true };
+  if (isWin) {
+    const r = spawnSync('cmd.exe', ['/d', '/s', '/c', 'mklink', '/J', link, target], { encoding: 'utf8', windowsVerbatimArguments: true, timeout: 10000 });
+    if (r.status === 0) return { ok: true };
+    return { error: ((r.stderr || r.stdout || 'mklink failed').trim().split('\n')[0] || '').slice(0, 160) };
+  }
+  try { symlinkSync(target, link, 'dir'); return { ok: true }; }
+  catch (e) { return { error: String(e.code || e.message) }; } // EPERM / EEXIST / EXDEV — caller falls back
 }
 
 /* ---------- process-tree control ---------- */
