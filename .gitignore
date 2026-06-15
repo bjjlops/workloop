@@ -11,3 +11,7 @@ node_modules/
 *.log
 .env
 .env.*
+
+# transient memory write artifacts (CLAUDE.md is committed; its lock/tmp are not)
+CLAUDE.md.lock
+*.tmp
