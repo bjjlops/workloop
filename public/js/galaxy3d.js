@@ -23,16 +23,11 @@ const Repo3D = (() => {
   const QC = () => QCFG[q()];
 
   /* ----- theme (defaults = Mission Control; theme.js overwrites via retheme) ----- */
-  const EXT_GROUPS = {
-    dir: ['dir'], ts: ['ts'], tsx: ['tsx'], js: ['js'], jsx: ['jsx'],
-    script: ['mjs', 'cjs', 'sh', 'zsh', 'bash'], data: ['json'],
-    style: ['css', 'scss', 'sass', 'less'], markup: ['html'],
-    docs: ['md', 'mdx', 'txt'], sql: ['sql'],
-    image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'],
-    config: ['yml', 'yaml', 'toml', 'lock', 'env', 'plist', 'gradle', 'properties', 'config'],
-    native: ['swift', 'kt', 'java', 'm', 'h', 'mm'],
-    other: ['other'],
-  };
+  // Palette map, heat ramp, byte/ease formatters, and trail/ping defaults are
+  // shared with the 2D renderer via galaxy-core.js — one source of truth. The
+  // default palette is kept under its local name PAL_HEX_DEFAULT; buildHeat3
+  // yields vec3 (0..1) for GL where the 2D buildHeat yields '#rrggbb'.
+  const { EXT_GROUPS, expandPal, PAL_DEFAULT: PAL_HEX_DEFAULT, buildHeat3, extOf, fmtB, easeIO, TRAILS_DEF, PING_DEF } = GalaxyCore;
   let probeEl = null;
   function cssRGB(expr) { // resolve any CSS color expr -> [r,g,b] 0..1
     if (!probeEl) { probeEl = document.createElement('i'); probeEl.style.display = 'none'; document.body.appendChild(probeEl); }
@@ -43,17 +38,6 @@ const Repo3D = (() => {
   const hex3 = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
   const lum = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
   const brite = (c, k = 0.55) => c.map((v) => v + (1 - v) * k);
-  function expandPal(groups) {
-    const pal = {};
-    for (const [g, exts] of Object.entries(EXT_GROUPS)) for (const e of exts) pal[e] = groups[g];
-    return pal;
-  }
-  const PAL_HEX_DEFAULT = {
-    dir: '#4fd1c5', ts: '#8ab4ff', tsx: '#5e8fe6', js: '#e6cf6f', jsx: '#cdb45c',
-    script: '#3fb66e', data: '#e0a33e', style: '#c08bff', markup: '#e0614b',
-    docs: '#8c95a3', sql: '#d678b6', image: '#5dbb8f', config: '#7d8aa0',
-    native: '#d98a68', other: '#5c6470',
-  };
   let palHex = expandPal(PAL_HEX_DEFAULT); // hex mirror of TH.pal — legend swatches paint HTML, not GL
   const TH = {
     pal: expandPal(Object.fromEntries(Object.entries(PAL_HEX_DEFAULT).map(([g, h]) => [g, hex3(h)]))),
@@ -70,13 +54,6 @@ const Repo3D = (() => {
     heatEmpty: hex3('#3a4150'),
     wave: hex3('#ff7a5c'), waveHex: '#ff7a5c', // shockwave front — theme.js hands over the accent's complement
   };
-  function buildHeat3(stopsHex) { // 32-step vec3 ramp lerped between the 5 stops (mirrors galaxy.js)
-    const stops = stopsHex.map(hex3);
-    return Array.from({ length: 32 }, (_, i) => {
-      const t = (i / 31) * (stops.length - 1), a = Math.min(stops.length - 2, Math.floor(t)), f = t - a;
-      return stops[a].map((v, j) => v + (stops[a + 1][j] - v) * f);
-    });
-  }
   let HEAT3 = buildHeat3(['#ecb24c', '#c48642', '#786a58', '#4a5260', '#343b47']); // recent → old
 
   /* ----- tweaks (drawer sliders; viz-mode.js persists + pushes these) ----- */
@@ -106,13 +83,11 @@ const Repo3D = (() => {
   let selectedPath = null, selV = null; // node-menu selection — blue trail
   const activity = new Map(); // path -> { op: 'read'|'edit', t } — live agent tool attribution
   let doneFlashUntil = 0; // run finished: hold streams in the done color, then retract
-  const TRAILS_DEF = { hover: '#3b82f6', selected: '#3b82f6', read: '#ff9f43', edit: '#ff4d4d', done: '#22c55e', holdMs: 2000 };
   const tc3 = (k) => (typeof Trails !== 'undefined' ? Trails.c3(k) : hex3(TRAILS_DEF[k]));
   const trailsCfg = () => (typeof Trails !== 'undefined' ? Trails.cfg : TRAILS_DEF);
   const dirtyWaves = []; // light-bending shockwaves rippling out from dirty nodes
   let lastWaveCyc = -1;
   const waveU = new Float32Array(16); // 4 × vec4 uniform scratch
-  const PING_DEF = { on: true, every: 7, sweep: 3.6, width: 1, power: 1 };
   const pingCfg = () => (typeof Ping !== 'undefined' ? Ping.cfg : PING_DEF); // Appearance sliders
   let loading = false, queued = false, srcByPath = null, lastHead = null;
   let legendEl = null;
@@ -140,10 +115,7 @@ const Repo3D = (() => {
     x = (x ^ (x >>> 16)) >>> 0;
     return x / 4294967296;
   };
-  const extOf = (n) => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : ''; };
-  const easeIO = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-  const fmtB = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB' : n >= 1024 ? (n / 1024).toFixed(1) + ' KB' : (n || 0) + ' B';
   const gauss = (a, b) => (a + b - 1) * 1.2; // two hashes -> approx normal
 
   /* ----- data: same payload as RepoViz ----- */
@@ -501,8 +473,8 @@ const Repo3D = (() => {
     };
     up('nFrom', aFrom, true); up('nTo', aTo, true); up('nCol', aColor); up('nMeta', aMeta);
     up('lFrom', linkFrom, true); up('lTo', linkTo, true); up('lCol', linkColor); up('lMeta', linkMeta);
-    B.nodeVAO = vao([[0, 'nFrom', 3], [1, 'nTo', 3], [2, 'nCol', 3], [3, 'nMeta', 4]]);
-    B.lineVAO = vao([[0, 'lFrom', 3], [1, 'lTo', 3], [2, 'lCol', 3], [3, 'lMeta', 4]]);
+    setVAO('nodeVAO', [[0, 'nFrom', 3], [1, 'nTo', 3], [2, 'nCol', 3], [3, 'nMeta', 4]]);
+    setVAO('lineVAO', [[0, 'lFrom', 3], [1, 'lTo', 3], [2, 'lCol', 3], [3, 'lMeta', 4]]);
     posSettled = false;
   }
   function vao(spec) {
@@ -512,11 +484,22 @@ const Repo3D = (() => {
     gl.bindVertexArray(null);
     return v;
   }
-  function dynVAO(key, floats, spec) { // dynamic buffer + vao in one step
+  // Free the previous VAO before replacing it. These rebuild constantly (hover,
+  // stream polling, morph), and gl.deleteVertexArray was never called anywhere —
+  // dozens of VAOs leaked per second during a run.
+  function setVAO(key, spec) {
+    if (B[key]) { try { env.gl.deleteVertexArray(B[key]); } catch { /* gone */ } }
+    return (B[key] = vao(spec));
+  }
+  function freeVAO(key) {
+    if (B[key]) { try { env.gl.deleteVertexArray(B[key]); } catch { /* gone */ } B[key] = null; }
+  }
+  function dynVAO(vaoKey, key, floats, spec) { // dynamic buffer + vao in one step
     const gl = env.gl;
+    if (B[key]) { try { gl.deleteBuffer(B[key]); } catch { /* gone */ } }
     B[key] = GL3D.buf(gl, new Float32Array(floats), true);
     B.caps[key] = floats * 4;
-    return vao(spec.map(([loc, size, div]) => [loc, key, size, div]));
+    return setVAO(vaoKey, spec.map(([loc, size, div]) => [loc, key, size, div]));
   }
 
   /* ----- environment: stars, dust, nebula ----- */
@@ -538,13 +521,13 @@ const Repo3D = (() => {
     const far = mkStars(Math.round(c.stars * sc), boundR * 2.6, boundR * 7, 1.1, 3);
     B.starN = far.count;
     B.sPos = GL3D.buf(gl, far.pos); B.sDat = GL3D.buf(gl, far.dat);
-    B.starVAO = vao([[0, 'sPos', 3], [1, 'sDat', 2]]);
+    setVAO('starVAO', [[0, 'sPos', 3], [1, 'sDat', 2]]);
     const dn = Math.round(c.dust * sc);
     B.dustN = dn;
     if (dn) {
       const du = mkStars(dn, boundR * 0.4, boundR * 1.7, 0.8, 1.7);
       B.dPos = GL3D.buf(gl, du.pos); B.dDat = GL3D.buf(gl, du.dat);
-      B.dustVAO = vao([[0, 'dPos', 3], [1, 'dDat', 2]]);
+      setVAO('dustVAO', [[0, 'dPos', 3], [1, 'dDat', 2]]);
     }
     buildNebula();
   }
@@ -618,6 +601,7 @@ const Repo3D = (() => {
     for (const key of ['fxGlow', 'fxStar', 'fxRing']) {
       B[key] = GL3D.buf(gl, new Float32Array(256 * 12), true);
       B.caps[key] = 256 * 12 * 4;
+      freeVAO(key + 'VAO'); // release a prior fx VAO before rebuilding it
       const v = gl.createVertexArray();
       gl.bindVertexArray(v);
       GL3D.attr(gl, 0, B.cornerB, 2);
@@ -625,13 +609,13 @@ const Repo3D = (() => {
       gl.bindVertexArray(null);
       B[key + 'VAO'] = v;
     }
-    B.trailVAO = dynVAO('trailP', TRAIL_MAX * 3, [[0, 3]]);
+    B.trailVAO = dynVAO('trailVAO', 'trailP', TRAIL_MAX * 3, [[0, 3]]);
     env.gl.bindVertexArray(B.trailVAO);
     B.trailC = GL3D.buf(gl, new Float32Array(TRAIL_MAX * 3), true);
     B.trailD = GL3D.buf(gl, new Float32Array(TRAIL_MAX * 2), true);
     GL3D.attr(gl, 1, B.trailC, 3); GL3D.attr(gl, 2, B.trailD, 2);
     env.gl.bindVertexArray(null);
-    B.strmVAO = null; // built lazily when a run lights paths up
+    freeVAO('strmVAO'); // built lazily when a run lights paths up
   }
 
   /* ----- camera ----- */
@@ -781,7 +765,7 @@ const Repo3D = (() => {
       else { B[key] = GL3D.buf(gl, data, true); B.caps[key] = data.byteLength; }
     };
     up('stF', f); up('stT', t); up('stC', c); up('stM', m);
-    B.strmVAO = vao([[0, 'stF', 3], [1, 'stT', 3], [2, 'stC', 3], [3, 'stM', 4]]);
+    setVAO('strmVAO', [[0, 'stF', 3], [1, 'stT', 3], [2, 'stC', 3], [3, 'stM', 4]]);
   }
 
   /* ----- navigation / integration API (RepoViz contract) ----- */
@@ -825,7 +809,7 @@ const Repo3D = (() => {
       else { B[key] = GL3D.buf(gl, data, true); B.caps[key] = data.byteLength; }
     };
     up('spF', f); up('spT', t); up('spC', c); up('spM', m);
-    B.spotVAO = vao([[0, 'spF', 3], [1, 'spT', 3], [2, 'spC', 3], [3, 'spM', 4]]);
+    setVAO('spotVAO', [[0, 'spF', 3], [1, 'spT', 3], [2, 'spC', 3], [3, 'spM', 4]]);
   }
   function buildChainBatch(v, color, fKey, tKey, cKey, mKey, vaoKey) { // shared recipe for hover/selection trails
     if (!B) return 0;
@@ -843,7 +827,7 @@ const Repo3D = (() => {
       else { B[key] = GL3D.buf(gl, data, true); B.caps[key] = data.byteLength; }
     };
     up(fKey, f); up(tKey, t); up(cKey, c); up(mKey, m);
-    B[vaoKey] = vao([[0, fKey, 3], [1, tKey, 3], [2, cKey, 3], [3, mKey, 4]]);
+    setVAO(vaoKey, [[0, fKey, 3], [1, tKey, 3], [2, cKey, 3], [3, mKey, 4]]);
     return n;
   }
   function buildHover() {

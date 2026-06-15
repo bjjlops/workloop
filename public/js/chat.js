@@ -233,7 +233,7 @@ const Chat = (() => {
     Bus.on('handoff.new', (ev) => {
       // replayed history (the ring persists across restarts) must not re-add
       // since-resolved cards or inflate the badge — loadHistory covers the past
-      if (ev?.ts && Date.now() - ev.ts > 15000) return;
+      if (!Bus.live(ev)) return;
       renderHandoff(ev.data?.handoff);
       if (!Drawers.isOpen('r')) {
         const badge = $('#hud-badge');
@@ -257,7 +257,7 @@ const Chat = (() => {
     // reconcile cards without touching the transcript (loadHistory would
     // wipe a streaming bubble)
     Bus.on('handoff.changed', async (ev) => {
-      if (ev?.ts && Date.now() - ev.ts > 15000) return; // ring replay — stale
+      if (!Bus.live(ev)) return; // ring replay — stale
       let hf;
       try { hf = await (await fetch('/api/handoffs')).json(); } catch { return; }
       const openIds = new Set((hf.handoffs || []).filter((x) => x.status === 'open').map((x) => x.id));
@@ -276,13 +276,13 @@ const Chat = (() => {
     // the other instance's copilot talked — refresh the transcript, but never
     // mid-stream (this tab's reply is the fresher truth)
     Bus.on('chat.changed', (ev) => {
-      if (ev?.ts && Date.now() - ev.ts > 15000) return;
+      if (!Bus.live(ev)) return;
       if (!aborter) loadHistory();
     });
     // repo switch resets the session server-side — REFETCH, never clear:
     // the bus replays its event ring on reconnect, and a clear-on-replay
     // would eat real messages on every page load
-    Bus.on('chat.reset', (ev) => { if (!ev?.ts || Date.now() - ev.ts < 15000) loadHistory(); });
+    Bus.on('chat.reset', (ev) => { if (Bus.live(ev)) loadHistory(); });
     loadHistory();
   }
 

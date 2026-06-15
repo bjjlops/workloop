@@ -36,5 +36,5 @@ async function pollDev() {
 
 // dev start/exit events refresh the chip promptly (the 3s poll covers the gaps);
 // replayed history (the ring persists across restarts) doesn't need a poll
-Bus.on('dev.start', (ev) => { if (!ev?.ts || Date.now() - ev.ts < 15000) pollDev(); });
-Bus.on('dev.exit', (ev) => { if (!ev?.ts || Date.now() - ev.ts < 15000) pollDev(); });
+Bus.on('dev.start', (ev) => { if (Bus.live(ev)) pollDev(); });
+Bus.on('dev.exit', (ev) => { if (Bus.live(ev)) pollDev(); });
