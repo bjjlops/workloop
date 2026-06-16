@@ -16,8 +16,8 @@ first‑class; Linux is best‑effort.**
    ┌── control ──┐  ├──────────────────────────────────────────────────────┤  ┌─── work ───┐
    │ repo picker │  │                                                      │  │ TASKS      │
    │ branches    │  │                  THE GALAXY                          │  │  needs work│
-   │ run locally │  │        every file a star, every run a comet         │  │  queue     │
-   │ commands    │  │     uncommitted work pulses until you commit        │  │ ACTIVITY   │
+   │ run locally │  │        every file a star, every run a comet          │  │  queue     │
+   │ commands    │  │     uncommitted work pulses until you commit         │  │ ACTIVITY   │
    │ engine      │  │                                                      │  │  live log  │
    │ loop mode   │  │                                                      │  │ COPILOT    │
    │ themes ×16  │  │                                                      │  │  chat +    │
