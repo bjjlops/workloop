@@ -16,6 +16,8 @@
   pollDev();
   RepoViz.init();
   if (typeof Repo3D !== 'undefined') Repo3D.init(); // 3D galaxy shares the same repotree
+  if (typeof VizMode !== 'undefined') VizMode.boot(); // register views, build picker, init flat modes
+  if (typeof Themes !== 'undefined') Themes.apply(document.documentElement.dataset.theme, false); // retheme every registered view
   Drawers.pushInsets(false); // initial camera fit accounts for open drawers
 
   // bus-driven refreshes. The ring now PERSISTS across restarts and replays

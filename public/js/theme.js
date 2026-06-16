@@ -127,8 +127,8 @@ const Themes = (() => {
       document.documentElement.dataset.theme = id;
       // read AFTER the flip — computed styles must reflect the new theme (G7)
       const t = readThemeFromCSS();
-      RepoViz.retheme(t);
-      if (typeof Repo3D !== 'undefined') Repo3D.retheme(t);
+      if (typeof Viz !== 'undefined') Viz.retheme(t); // fan to every registered view
+      else { RepoViz.retheme(t); if (typeof Repo3D !== 'undefined') Repo3D.retheme(t); }
       if (typeof Ambient !== 'undefined') Ambient.set(t.ambient, t);
       document.querySelectorAll('.theme-card').forEach((c) => {
         const on = c.dataset.id === id;
