@@ -120,10 +120,14 @@ body.run-active .viz-shell::after { opacity: 1; animation: ring-flow 7s linear i
 
 @media (max-width: 760px) { .viz-hud .n { display: none } }
 
-/* ================= 3D galaxy (Repo3D) ================= */
-#repoviz3d { position: absolute; inset: 0 }
-body:not([data-viz="3d"]) #repoviz3d { display: none }
-body[data-viz="3d"] #repoviz { display: none }
+/* ================= view sections — one visible at a time ================= */
+#stage > section { position: absolute; inset: 0; display: none }
+body[data-viz="2d"] #repoviz,
+body[data-viz="3d"] #repoviz3d,
+body[data-viz="pack"] #repoviz-pack,
+body[data-viz="tree"] #repoviz-tree,
+body[data-viz="metro"] #repoviz-metro,
+body[data-viz="treemap"] #repoviz-treemap { display: block }
 #viz3d-labels { pointer-events: none }
 
 /* 2D ⇄ 3D view switch, in the HUD */

@@ -87,6 +87,14 @@ const RepoViz = (() => {
   const ST_MAX = 20, PKT_MAX = 24, DASH = [0, 0], NODASH = [];
   let geomGen = 0;
   let maxDepth = 1;
+  // 2D layout: 'radial' = the classic sector tree; 'spiral' = a golden-angle
+  // (phyllotaxis) placement that gives siblings even spacing instead of
+  // weight-proportional wedges — the fix for deeply-nested folders flung to
+  // arbitrary-looking angles. Spacing/twist are user-tunable (#g2-* sliders).
+  let layout2d = localStorage.getItem('wl.glayout') === 'spiral' ? 'spiral' : 'radial';
+  let spiralSpacing = 1, spiralTwist = 1;
+  try { const g2 = JSON.parse(localStorage.getItem('wl.g2') || '{}'); spiralSpacing = +g2.spacing || 1; spiralTwist = +g2.twist || 1; } catch { /* fresh */ }
+  const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
   /* ----- small helpers ----- */
   const ago = (t) => { const d = Date.now() / 1000 - t;
@@ -259,6 +267,28 @@ const RepoViz = (() => {
     }
   }
 
+  /* ----- spiral (phyllotaxis) layout -----
+     Each parent fans its children out on a golden-angle spiral: child i sits at
+     angle base + i·137.5° and radius ∝ √i, so siblings never contend for the same
+     wedge and a heavy folder grows a longer, denser arm instead of squeezing its
+     neighbours to odd angles. We still set .angle/.a0/.a1 so the rest of the file
+     (links, autoExpand fallback) keeps working. */
+  function assignSpiral(v, base, depth) {
+    v.angle = base; v.a0 = base - 0.12; v.a1 = base + 0.12;
+    if (depth === 0) { v.tx = 0; v.ty = 0; }
+    const kids = v.kids;
+    if (!kids.length) return;
+    const ordered = kids.slice().sort((a, b) => weight(b) - weight(a)); // big arms reach furthest
+    const gap = (depth === 0 ? RING0 * 0.85 : (RING * 0.55) / Math.sqrt(depth + 1)) * spiralSpacing;
+    ordered.forEach((k, i) => {
+      const ang = base + (i + 1) * GOLDEN_ANGLE * spiralTwist;
+      const rr = (depth === 0 ? RING0 * 0.5 : v.r + 6) + gap * Math.sqrt(i + 0.6) + k.r * 1.3;
+      k.tx = v.tx + rr * Math.cos(ang);
+      k.ty = v.ty + rr * Math.sin(ang);
+      assignSpiral(k, ang, depth + 1);
+    });
+  }
+
   function buildGrid() {
     grid = new Map();
     for (const v of vis) {
@@ -273,8 +303,8 @@ const RepoViz = (() => {
     const prev = new Map();
     for (const v of vis) prev.set(keyOfV(v), [v.x, v.y]);
     buildVis();
-    assignSectors(visRoot, -Math.PI / 2, Math.PI * 1.5);
-    fanPass();
+    if (layout2d === 'spiral') assignSpiral(visRoot, -Math.PI / 2, 0);
+    else { assignSectors(visRoot, -Math.PI / 2, Math.PI * 1.5); fanPass(); }
     buildGrid();
     maxDepth = 1;
     for (const v of vis) if (v.depth > maxDepth) maxDepth = v.depth;
@@ -399,7 +429,8 @@ const RepoViz = (() => {
       const [sx, sy] = screenOf(v.tx, v.ty);
       if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
       const cn = Math.min(v.n.children.length, CHILD_CAP);
-      if (((v.a1 - v.a0) * ringR(v.depth + 1) * cam.k) / cn < 9) continue;
+      if (layout2d === 'spiral') { if (v.r * cam.k < 11) continue; }
+      else if (((v.a1 - v.a0) * ringR(v.depth + 1) * cam.k) / cn < 9) continue;
       if (count + cn > NODE_CAP) continue;
       expanded.add(v.n);
       count += cn;
@@ -486,6 +517,11 @@ const RepoViz = (() => {
   // (v.tx/v.ty) — the single source of the link geometry linkPath and traceChain
   // both used to transcribe by hand.
   function linkSegment(g, p, c, X, Y) {
+    if (layout2d === 'spiral') { // controls from real positions, not polar angle/radius
+      const px = X(p), py = Y(p), cx = X(c), cy = Y(c);
+      g.bezierCurveTo(px + (cx - px) * 0.33, py + (cy - py) * 0.33, px + (cx - px) * 0.66, py + (cy - py) * 0.66, cx, cy);
+      return;
+    }
     if (p.depth === 0) {
       const r = RING0 * 0.45;
       g.quadraticCurveTo(r * Math.cos(c.angle), r * Math.sin(c.angle), X(c), Y(c));
@@ -507,7 +543,7 @@ const RepoViz = (() => {
     if (!visRoot) return;
     VizScenery.drawBack(bctx, cam, W, H); // parallax starfield + nebula gas (screen space)
     setWorld(bctx);
-    VizScenery.drawOrbits(bctx, cam, RING0, RING, maxDepth, W, H);
+    if (layout2d === 'radial') VizScenery.drawOrbits(bctx, cam, RING0, RING, maxDepth, W, H);
     VizScenery.drawCore(bctx, colorOf(visRoot));
     const mw = W / 2 / cam.k + 30, mh = H / 2 / cam.k + 30;
     const inView = (v) => Math.abs(v.x - cam.x) < mw && Math.abs(v.y - cam.y) < mh;
@@ -820,6 +856,16 @@ const RepoViz = (() => {
   /* ----- drawing: fx layer ----- */
   function sampleLink(p, c, out) { // polyline along the same curve linkPath draws
     const start = out.length ? 1 : 0;
+    if (layout2d === 'spiral') {
+      const c1x = p.tx + (c.tx - p.tx) * 0.33, c1y = p.ty + (c.ty - p.ty) * 0.33;
+      const c2x = p.tx + (c.tx - p.tx) * 0.66, c2y = p.ty + (c.ty - p.ty) * 0.66;
+      for (let i = start; i <= 12; i++) {
+        const t = i / 12, u = 1 - t;
+        out.push([u * u * u * p.tx + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t * t * t * c.tx,
+          u * u * u * p.ty + 3 * u * u * t * c1y + 3 * u * t * t * c2y + t * t * t * c.ty]);
+      }
+      return;
+    }
     if (p.depth === 0) {
       const r = RING0 * 0.45, qx = r * Math.cos(c.angle), qy = r * Math.sin(c.angle);
       for (let i = start; i <= 12; i++) {
@@ -1634,6 +1680,14 @@ const RepoViz = (() => {
       legendEl.hidden = !legendEl.hidden;
       if (!legendEl.hidden) renderLegend();
     });
+    // 2D layout switch (radial ⇄ spiral) + spiral tuning, in the drawer
+    const laySync = () => document.querySelectorAll('#lay2d button').forEach((b) => b.classList.toggle('on', b.dataset.lay2 === layout2d));
+    document.querySelectorAll('#lay2d button').forEach((b) => b.addEventListener('click', () => { setLayout(b.dataset.lay2); laySync(); }));
+    laySync();
+    const g2save = () => localStorage.setItem('wl.g2', JSON.stringify({ spacing: spiralSpacing, twist: spiralTwist }));
+    const sp = $('#g2-spacing'), tw = $('#g2-twist');
+    if (sp) { sp.value = String(spiralSpacing); sp.addEventListener('input', () => { spiralSpacing = parseFloat(sp.value) || 1; g2save(); if (layout2d === 'spiral') relayout({ tween: true }); }); }
+    if (tw) { tw.value = String(spiralTwist); tw.addEventListener('input', () => { spiralTwist = parseFloat(tw.value) || 1; g2save(); if (layout2d === 'spiral') relayout({ tween: true }); }); }
   }
 
   function resize() {
@@ -1760,9 +1814,19 @@ const RepoViz = (() => {
     wake();
   }
 
+  function setLayout(name) {
+    name = name === 'spiral' ? 'spiral' : 'radial';
+    if (name === layout2d) return;
+    layout2d = name;
+    localStorage.setItem('wl.glayout', name);
+    userView = false;
+    relayout({ tween: true });
+    zoomToFitV(visRoot, 600);
+  }
+
   return {
     init, reload: () => load(false, false), runStarted, runEnded, retheme, setInsets, resize,
-    allPaths, flyTo, spotlight, setExtFilter, setHeat,
+    allPaths, flyTo, spotlight, setExtFilter, setHeat, setLayout, layout: () => layout2d,
     setPathFilter, setTaskMarks, setPins, setDirty,
     setSelected, fileActivity,
     onHoverChange: (fn) => { hoverCb = fn; },

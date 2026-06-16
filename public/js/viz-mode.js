@@ -1,16 +1,17 @@
-/* viz-mode.js — the 2D ⇄ 3D switch and the 3D drawer controls.
-   The two galaxies live in sibling stage sections (#repoviz / #repoviz3d);
-   flipping body[data-viz] swaps them and tells Repo3D to wake or sleep.
-   The 3D tweak sliders (camera feel, atmosphere, layout shape, node sizing)
-   build themselves into #g3d-tweaks using the drawer's existing .field/.qrow
-   recipe, persist as one JSON blob, and push straight into Repo3D. */
+/* viz-mode.js — the view switcher and the 3D drawer controls.
+   Views live in sibling stage sections (#repoviz / #repoviz3d / #repoviz-<id>);
+   flipping body[data-viz] swaps which one shows and wakes/sleeps each module.
+   The galaxies (RepoViz, Repo3D) register as built-ins at boot; the flat modes
+   (pack/heartwood/metro/treemap, built on viz2d.js) self-register on load. The
+   3D tweak sliders build themselves into #g3d-tweaks and push into Repo3D. */
 const VizMode = (() => {
   const KEY = 'wl.viz', TWKEY = 'wl.g3d.tw';
   let mode = localStorage.getItem(KEY) || '3d';
+  let booted = false;
+  const VIEWS = []; // { id, mod, label, builtin }
 
   const fmt2 = (v) => String(Math.round(v * 100) / 100);
   const SLIDERS = [
-    // key, label, min, max, step, format
     ['fov', 'FOV', 35, 85, 1, (v) => Math.round(v) + '°'],
     ['drift', 'drift speed', 0, 2, 0.05, fmt2],
     ['inertia', 'inertia', 0, 0.98, 0.02, fmt2],
@@ -24,25 +25,49 @@ const VizMode = (() => {
     ['labels', 'labels', 0, 2, 0.05, fmt2],
   ];
 
+  function register(id, mod, label, builtin = false) {
+    if (VIEWS.some((v) => v.id === id)) return;
+    VIEWS.push({ id, mod, label, builtin });
+    if (booted) { addButton(id, label); if (id === mode) apply(mode, false); }
+  }
+
+  function addButton(id, label) {
+    const seg = document.getElementById('viewseg');
+    if (!seg || seg.querySelector(`[data-view="${id}"]`)) return;
+    const b = document.createElement('button');
+    b.dataset.view = id; b.id = 'view-' + id; b.textContent = label;
+    b.setAttribute('role', 'tab'); b.title = label;
+    b.classList.toggle('on', id === mode);
+    b.addEventListener('click', () => apply(id));
+    seg.appendChild(b);
+  }
+  function buildPicker() {
+    const seg = document.getElementById('viewseg');
+    if (!seg) return;
+    seg.innerHTML = '';
+    for (const v of VIEWS) addButton(v.id, v.label);
+  }
+
   function apply(m, persist = true) {
-    mode = m === '2d' ? '2d' : '3d';
+    if (!VIEWS.some((v) => v.id === m)) m = VIEWS.some((v) => v.id === '3d') ? '3d' : (VIEWS[0] && VIEWS[0].id) || '2d';
+    mode = m;
     document.body.dataset.viz = mode;
-    $('#view-2d')?.classList.toggle('on', mode === '2d');
-    $('#view-3d')?.classList.toggle('on', mode === '3d');
-    const crumb = $('#hud-crumb'), pop = $('#viz-pop');
+    const seg = document.getElementById('viewseg');
+    seg?.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.view === mode));
+    const crumb = document.getElementById('hud-crumb'), pop = document.getElementById('viz-pop');
     if (crumb) crumb.hidden = true; // shared overlays: don't carry stale state across the switch
     if (pop) pop.hidden = true;
-    if (typeof Repo3D !== 'undefined') Repo3D.setVisible(mode === '3d');
-    // a map revealed after booting hidden must re-measure (RO can miss the flip)
-    if (mode === '2d' && typeof RepoViz !== 'undefined' && RepoViz.resize) requestAnimationFrame(() => RepoViz.resize());
+    for (const v of VIEWS) {
+      const on = v.id === mode;
+      if (v.mod.setVisible) v.mod.setVisible(on);
+      if (on && v.mod.resize) requestAnimationFrame(() => v.mod.resize());
+    }
     if (persist) localStorage.setItem(KEY, mode);
   }
 
-  function loadTweaks() {
-    try { return JSON.parse(localStorage.getItem(TWKEY) || '{}'); } catch { return {}; }
-  }
+  function loadTweaks() { try { return JSON.parse(localStorage.getItem(TWKEY) || '{}'); } catch { return {}; } }
   function buildControls() {
-    const host = $('#g3d-tweaks');
+    const host = document.getElementById('g3d-tweaks');
     if (!host || typeof Repo3D === 'undefined') return;
     const saved = loadTweaks();
     const cur = { ...Repo3D.tweaks(), ...saved };
@@ -64,8 +89,7 @@ const VizMode = (() => {
         localStorage.setItem(TWKEY, JSON.stringify(s));
       });
     }
-    // layout switcher
-    const seg = $('#layseg');
+    const seg = document.getElementById('layseg');
     if (seg) {
       const sync = () => {
         const cur2 = Repo3D.layout();
@@ -76,46 +100,58 @@ const VizMode = (() => {
     }
   }
 
-  function init() {
-    $('#view-2d')?.addEventListener('click', () => apply('2d'));
-    $('#view-3d')?.addEventListener('click', () => apply('3d'));
+  // Called from main.js after the galaxies are inited. Registers the built-ins,
+  // builds the picker from the full registry (flat modes self-registered already),
+  // inits the flat modes, and shows the persisted view.
+  function boot() {
+    if (typeof RepoViz !== 'undefined') register('2d', RepoViz, 'Galaxy', true);
+    if (typeof Repo3D !== 'undefined') register('3d', Repo3D, '3D', true);
+    const ORDER = ['2d', '3d', 'pack', 'tree', 'metro', 'treemap'];
+    VIEWS.sort((a, b) => { const ai = ORDER.indexOf(a.id), bi = ORDER.indexOf(b.id); return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi); });
+    booted = true;
+    buildPicker();
     buildControls();
+    for (const v of VIEWS) if (!v.builtin && v.mod.init) v.mod.init();
     apply(mode, false);
   }
+
   // deferred scripts: body exists — set the attribute before first paint
   document.body.dataset.viz = mode;
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
 
-  return { apply, mode: () => mode };
+  return { register: (id, mod, label) => register(id, mod, label, false), boot, apply, mode: () => mode, views: () => VIEWS };
 })();
 
-/* Viz — one door for everything outside the galaxies (nav, board, drawers).
-   State ops fan out to BOTH views so they stay in sync across the 2D ⇄ 3D
-   switch; reads and navigation go to the ACTIVE view, falling back to the
-   other when it has no data yet (both are built from the same payload). */
+/* Viz — one door for everything outside the views (nav, board, drawers).
+   State ops fan out to ALL registered views so they stay in sync across switches;
+   reads/navigation go to the ACTIVE view, falling back to any other that has data
+   (all are built from the same /api/repotree payload). */
 const Viz = (() => {
-  const has3D = () => typeof Repo3D !== 'undefined';
-  const is3D = () => document.body.dataset.viz === '3d' && has3D();
-  const active = () => (is3D() ? Repo3D : RepoViz);
-  const other = () => (is3D() ? RepoViz : (has3D() ? Repo3D : null));
-  const each = (fn) => { fn(RepoViz); if (has3D()) fn(Repo3D); };
+  const mods = () => VizMode.views().map((v) => v.mod).filter(Boolean);
+  const active = () => {
+    const id = document.body.dataset.viz;
+    const hit = VizMode.views().find((v) => v.id === id);
+    return (hit && hit.mod) || mods()[0] || null;
+  };
+  const each = (fn) => { for (const m of mods()) fn(m); };
   return {
     active,
     reload: () => each((v) => v.reload && v.reload()),
+    retheme: (t) => each((v) => v.retheme && v.retheme(t)),
+    setInsets: (n, a) => each((v) => v.setInsets && v.setInsets(n, a)),
+    resize: () => each((v) => v.resize && v.resize()),
     allPaths: () => {
-      const a = (active().allPaths && active().allPaths()) || [];
+      const a = (active() && active().allPaths && active().allPaths()) || [];
       if (a.length) return a;
-      const o = other();
-      return (o && o.allPaths && o.allPaths()) || [];
+      for (const m of mods()) { const o = m.allPaths && m.allPaths(); if (o && o.length) return o; }
+      return [];
     },
     langStats: () => {
-      const a = (active().langStats && active().langStats()) || {};
+      const a = (active() && active().langStats && active().langStats()) || {};
       if (Object.keys(a).length) return a;
-      const o = other();
-      return (o && o.langStats && o.langStats()) || {};
+      for (const m of mods()) { const o = m.langStats && m.langStats(); if (o && Object.keys(o).length) return o; }
+      return {};
     },
-    flyTo: (p) => !!(active().flyTo && active().flyTo(p)),
+    flyTo: (p) => !!(active() && active().flyTo && active().flyTo(p)),
     spotlight: (p) => each((v) => v.spotlight && v.spotlight(p)),
     setSelected: (p) => each((v) => v.setSelected && v.setSelected(p)),
     setExtFilter: (s) => each((v) => v.setExtFilter && v.setExtFilter(s)),
@@ -123,6 +159,9 @@ const Viz = (() => {
     setTaskMarks: (l) => each((v) => v.setTaskMarks && v.setTaskMarks(l)),
     setPins: (s) => each((v) => v.setPins && v.setPins(s)),
     setDirty: (l) => each((v) => v.setDirty && v.setDirty(l)),
+    runStarted: () => each((v) => v.runStarted && v.runStarted()),
+    runEnded: (ok) => each((v) => v.runEnded && v.runEnded(ok)),
+    fileActivity: (p, op) => each((v) => v.fileActivity && v.fileActivity(p, op)),
     onNodeMenu: (fn) => each((v) => v.onNodeMenu && v.onNodeMenu(fn)),
     onHoverChange: (fn) => each((v) => v.onHoverChange && v.onHoverChange(fn)),
     onFileClick: (fn) => each((v) => v.onFileClick && v.onFileClick(fn)),
@@ -145,7 +184,6 @@ const Ping = (() => {
   const fmtS = (v) => v.toFixed(1) + 's';
   const fmtX = (v) => '×' + v.toFixed(2);
   const SLIDERS = [
-    // key, label, min, max, step, format
     ['every', 'fires every', 3, 20, 0.5, fmtS],
     ['sweep', 'sweep time', 1.2, 8, 0.2, fmtS],
     ['width', 'front width', 0.4, 2.5, 0.05, fmtX],
@@ -196,7 +234,7 @@ const Trails = (() => {
     ['done', 'finished flash'],
   ];
   const save = () => localStorage.setItem('wl.trails', JSON.stringify(cfg));
-  const c3 = (key) => { // hex -> [r,g,b] 0..1 for the 3D view
+  const c3 = (key) => {
     const h = cfg[key] || DEF[key];
     return [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
   };

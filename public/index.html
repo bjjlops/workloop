@@ -30,8 +30,8 @@ document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2'
     <span class="dot" id="d-repo"></span><span id="hud-branch-name">…</span>
   </button>
   <span class="workchip"><span class="wdot"></span>working</span>
-  <div class="viewseg" role="tablist" aria-label="View">
-    <button id="view-2d" role="tab" title="Flat radial map">2D</button>
+  <div class="viewseg" id="viewseg" role="tablist" aria-label="View">
+    <button id="view-2d" role="tab" title="Flat radial map">Galaxy</button>
     <button id="view-3d" role="tab" title="Orbital galaxy">3D</button>
   </div>
   <div class="hud-search">
@@ -84,7 +84,49 @@ document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2'
     </div>
   </section>
 
-  <!-- shared overlays: the file popover + hovered-path breadcrumb serve both views -->
+  <!-- flat modes (viz2d.js): bubbles / tree / metro / treemap -->
+  <section id="repoviz-pack">
+    <div class="viz-shell" id="vshell-pack"><canvas id="vcanvas-pack"></canvas>
+      <div class="viz-tip" id="vtip-pack" hidden></div></div>
+    <div class="viz-hud"><span class="n" id="vcount-pack"></span>
+      <button class="viztool" id="vz-pack-zin" title="Zoom in">＋</button>
+      <button class="viztool" id="vz-pack-zout" title="Zoom out">−</button>
+      <button class="viztool" id="vz-pack-fit" title="Fit whole repo (f)">⌖ fit</button>
+      <button class="viztool" id="vz-pack-heat" title="Color by recent commit activity">heat</button>
+    </div>
+  </section>
+  <section id="repoviz-tree">
+    <div class="viz-shell" id="vshell-tree"><canvas id="vcanvas-tree"></canvas>
+      <div class="viz-tip" id="vtip-tree" hidden></div></div>
+    <div class="viz-hud"><span class="n" id="vcount-tree"></span>
+      <button class="viztool" id="vz-tree-zin" title="Zoom in">＋</button>
+      <button class="viztool" id="vz-tree-zout" title="Zoom out">−</button>
+      <button class="viztool" id="vz-tree-fit" title="Fit whole repo (f)">⌖ fit</button>
+      <button class="viztool" id="vz-tree-heat" title="Color by recent commit activity">heat</button>
+    </div>
+  </section>
+  <section id="repoviz-metro">
+    <div class="viz-shell" id="vshell-metro"><canvas id="vcanvas-metro"></canvas>
+      <div class="viz-tip" id="vtip-metro" hidden></div></div>
+    <div class="viz-hud"><span class="n" id="vcount-metro"></span>
+      <button class="viztool" id="vz-metro-zin" title="Zoom in">＋</button>
+      <button class="viztool" id="vz-metro-zout" title="Zoom out">−</button>
+      <button class="viztool" id="vz-metro-fit" title="Fit whole repo (f)">⌖ fit</button>
+      <button class="viztool" id="vz-metro-heat" title="Color by recent commit activity">heat</button>
+    </div>
+  </section>
+  <section id="repoviz-treemap">
+    <div class="viz-shell" id="vshell-treemap"><canvas id="vcanvas-treemap"></canvas>
+      <div class="viz-tip" id="vtip-treemap" hidden></div></div>
+    <div class="viz-hud"><span class="n" id="vcount-treemap"></span>
+      <button class="viztool" id="vz-treemap-zin" title="Zoom in">＋</button>
+      <button class="viztool" id="vz-treemap-zout" title="Zoom out">−</button>
+      <button class="viztool" id="vz-treemap-fit" title="Fit whole repo (f)">⌖ fit</button>
+      <button class="viztool" id="vz-treemap-heat" title="Color by recent commit activity">heat</button>
+    </div>
+  </section>
+
+  <!-- shared overlays: the file popover + hovered-path breadcrumb serve all views -->
   <div class="viz-pop" id="viz-pop" hidden></div>
   <div class="hud-crumb" id="hud-crumb" hidden></div>
 </main>
@@ -285,6 +327,22 @@ document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2'
       <div class="dlbody">
         <div id="theme-grid" role="radiogroup" aria-label="Theme"></div>
         <div class="field">
+          <label>Galaxy layout (2D)</label>
+          <div class="layseg" id="lay2d" role="radiogroup" aria-label="2D galaxy layout">
+            <button data-lay2="radial">Radial</button>
+            <button data-lay2="spiral">Spiral</button>
+          </div>
+          <span class="hint">Spiral spaces folders evenly on a golden-angle, instead of weight-proportional wedges.</span>
+        </div>
+        <div class="field">
+          <label for="g2-spacing">spiral spacing</label>
+          <div class="qrow"><input type="range" id="g2-spacing" min="0.5" max="2" step="0.05" /><span class="qname">arms</span></div>
+        </div>
+        <div class="field">
+          <label for="g2-twist">spiral twist</label>
+          <div class="qrow"><input type="range" id="g2-twist" min="0.3" max="2" step="0.05" /><span class="qname">curl</span></div>
+        </div>
+        <div class="field">
           <label for="f-quality">Graphics quality</label>
           <div class="qrow"><input type="range" id="f-quality" min="0" max="3" step="1" value="2" /><span class="qname" id="q-name">High</span></div>
           <span class="hint">Lite is the original flat map. Ultra turns the atmosphere to 11.</span>
@@ -341,9 +399,15 @@ document.documentElement.dataset.fx = localStorage.getItem('wl.fx-level') || '2'
 <script defer src="/js/galaxy.js"></script>
 <script defer src="/js/gl3d.js"></script>
 <script defer src="/js/galaxy3d.js"></script>
+<script defer src="/js/viz-layout.js"></script>
+<script defer src="/js/viz2d.js"></script>
 <script defer src="/js/ambient.js"></script>
 <script defer src="/js/theme.js"></script>
 <script defer src="/js/viz-mode.js"></script>
+<script defer src="/js/pack.js"></script>
+<script defer src="/js/heartwood.js"></script>
+<script defer src="/js/metro.js"></script>
+<script defer src="/js/treemap.js"></script>
 <script defer src="/js/bus.js"></script>
 <script defer src="/js/status.js"></script>
 <script defer src="/js/settings.js"></script>
